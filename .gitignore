@@ -1,0 +1,27 @@
+﻿# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*.class
+*.pyo
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# PyInstaller / Build outputs
+build/
+dist/
+*.spec.bak
+*.exe
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
