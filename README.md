@@ -1,72 +1,97 @@
-﻿# 🌌 Any File Downloader v3.1 [Hologram Edition]
+# Any File Downloader v3.1 — Recovery Stage 1
 
-A sleek, cyberpunk-inspired desktop downloader built with Python and CustomTkinter. Features a dynamic holographic HUD with real-time vector animation scaling, multi-format media extraction powered by yt-dlp, direct HTTP streaming for documents and archives, and advanced queue management.
+AnyFileDownloader is a cross-platform desktop downloader built with Python and CustomTkinter. This branch preserves the v3.1 Hologram Edition interface while rebuilding the lost browser-to-desktop architecture incrementally.
 
----
+## Current features
 
-## ✨ Features
+- Dark CustomTkinter interface with an animated throughput HUD.
+- Direct, chunked downloads for supported document and archive URLs.
+- Safe `.part` files and duplicate-aware final filenames for direct downloads.
+- Media extraction through yt-dlp.
+- 1080p, 720p, and 480p MP4 selections when FFmpeg is available.
+- MP3 extraction when FFmpeg is available.
+- Parallel and sequential multi-URL queues.
+- Optional playlist downloads.
+- Persistent download directory, quality, playlist, queue, and sort settings.
+- A Manifest V3 Chrome extension foundation and native-messaging bridge.
 
-- **Cyberpunk / Holographic Interface**: Dark glass transparency (lpha=0.78), neon cyan & amber accents, and futuristic HUD design.
-- **Dynamic Animated HUD**: Rotating vector HUD arcs on a custom canvas whose spin speed dynamically scales with live download throughput.
-- **Real-Time Speed & Progress Metrics**: Instant tracking of download speed (MB/s), completion percentage, and estimated time remaining (ETA).
-- **Direct Document & File Streaming**: Built-in chunked streaming downloader for PDFs, EPUBs, ZIP archives, executables, and direct HTTP/HTTPS files.
-- **Media Extraction via yt-dlp**: Support for 1080p, 720p, 480p video, and Best Audio (MP3) extraction.
-- **Multi-URL Queue Management**:
-  - **All at once (Parallel)**: Concurrent multi-stream downloads via ThreadPoolExecutor.
-  - **Sequential**: Ordered downloads with customizable sorting (Newest to Oldest / Oldest to Newest).
-- **Playlist Extraction**: Full playlist download support with reverse ordering option.
-- **Smart FFmpeg Integration**: Automatic detection of FFmpeg with graceful fallbacks.
-- **Quick Action Overlay**: Holographic pop-up menu for fast parameter selection.
-- **Cross-Platform**: Supports Windows, macOS, and Linux.
+## Recovery architecture
 
----
+```text
+Chrome extension
+    -> native_host.py
+    -> downloader.py
+    -> direct HTTP / yt-dlp / HLS through yt-dlp / FFmpeg
+    -> final downloaded file
+```
 
-## 🚀 Installation & Setup
+The native bridge accepts framed JSON messages containing `action`, `url`, `page_url`, and `title`. Chrome native-host registration is intentionally not included in this recovery stage, so the extension cannot connect until an OS-specific host manifest is installed in a later stage.
 
-### Prerequisites
-- Python 3.9 or higher
-- [Optional] [FFmpeg](https://ffmpeg.org/) (recommended for high-definition video muxing and MP3 conversion)
+## Requirements
 
-### 1. Clone the repository
-\\\ash
-git clone https://github.com/umidzonmamatkulov07-droid/AnyFileDownloader.git
-cd AnyFileDownloader
-\\\
+- Python 3.9 or newer
+- `customtkinter>=5.2.0`
+- `yt-dlp>=2024.0.0`
+- FFmpeg on `PATH` for audio/video merging and MP3 conversion
 
-### 2. Install dependencies
-\\\ash
-pip install -r requirements.txt
-\\\
+Install the Python dependencies:
 
-### 3. Run the application
-\\\ash
+```bash
+python -m pip install -r requirements.txt
+```
+
+Run the desktop application:
+
+```bash
 python downloader.py
-\\\
+```
 
----
+Run the tests:
 
-## 📦 Packaging to Standalone Executable (.exe)
+```bash
+python -m unittest discover -s tests -v
+```
 
-You can build a standalone Windows executable using PyInstaller:
+## Settings locations
 
-\\\ash
-pip install pyinstaller
-pyinstaller downloader.spec
-\\\
+Settings are stored in a per-user JSON file:
 
-The compiled binary will be placed in the dist/ directory.
+- Windows: `%APPDATA%\AnyFileDownloader\settings.json`
+- Linux: `$XDG_CONFIG_HOME/anyfiledownloader/settings.json`, or `~/.config/anyfiledownloader/settings.json`
+- macOS: `~/Library/Application Support/AnyFileDownloader/settings.json`
 
----
+Set `ANYFILEDOWNLOADER_CONFIG_DIR` to override the directory, which is useful for testing or portable development environments.
 
-## 🛠️ Tech Stack
+## Native messaging protocol
 
-- **GUI Framework**: [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
-- **Media Engine**: [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-- **Direct Streamer**: Python urllib & 	hreading
-- **Compiler**: PyInstaller
+Each message is UTF-8 JSON prefixed by its length as an unsigned 4-byte little-endian integer. Example request:
 
----
+```json
+{
+  "action": "download",
+  "url": "https://example.com/video",
+  "page_url": "https://example.com/watch",
+  "title": "Example video"
+}
+```
 
-## 📄 License
+Standard output from `native_host.py` is reserved for framed protocol responses. Diagnostic logging goes to standard error.
 
-This project is open source and available under the [MIT License](LICENSE).
+The extension currently uses the placeholder native host name `com.anyfiledownloader.native_host`. OS-level Chrome registration scripts and manifests remain future work.
+
+## Packaging
+
+The existing PyInstaller specs still build the desktop application:
+
+```bash
+python -m pip install pyinstaller
+pyinstaller AnyFileDownloader.spec
+```
+
+FFmpeg and the native messaging host are not bundled yet.
+
+## Project status
+
+This is reconstruction stage 1. It does not include aggressive media detection, DRM bypassing, site-specific extraction code, browser host registration, an installer, or bundled FFmpeg.
+
+A license file has not yet been added to the repository.

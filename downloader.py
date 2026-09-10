@@ -4,14 +4,16 @@ import re
 import time
 import shutil
 import threading
-import subprocess
+import argparse
 import urllib.request
 import urllib.parse
-import urllib.error
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, Canvas
+
+from app_settings import AppSettings, QUALITY_OPTIONS, SettingsStore
+from filename_resolver import filename_from_response, finalize_download, reserve_download_path
 
 # Ensure yt-dlp is available or handled gracefully
 try:
@@ -31,7 +33,7 @@ DIRECT_EXTENSIONS = (
 )
 
 class AnyFileDownloaderApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, initial_url="", initial_page_url="", initial_title=""):
         super().__init__()
 
         self.title("ANY FILEDOWNLOADER v3.1 [HOLOGRAM_EDITION]")
@@ -56,11 +58,20 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.configure(fg_color=self.bg_color)
 
         # Configuration variables
-        self.download_path = ctk.StringVar(value=str(Path.home() / "Downloads"))
-        self.queue_mode = ctk.StringVar(value="All at once")
-        self.sort_order = ctk.StringVar(value="Newest to Oldest")
+        self.settings_store = SettingsStore()
+        saved_settings = self.settings_store.load()
+        self.download_path = ctk.StringVar(value=saved_settings.download_directory)
+        self.quality_selection = ctk.StringVar(value=saved_settings.quality)
+        self.playlist_var = ctk.StringVar(value="on" if saved_settings.playlist else "off")
+        self.queue_mode = ctk.StringVar(value=saved_settings.queue_mode)
+        self.sort_order = ctk.StringVar(value=saved_settings.sort_order)
         self.theme_mode = ctk.StringVar(value="Dark")
         self.download_history = []
+        self.initial_request_metadata = {
+            "url": initial_url,
+            "page_url": initial_page_url,
+            "title": initial_title,
+        }
 
         # Animation states for sci-fi HUD speed scaling
         self.is_downloading = False
@@ -72,11 +83,41 @@ class AnyFileDownloaderApp(ctk.CTk):
         # Build UI Structure with Hologram Styling
         self.create_header()
         self.create_navigation_tabs()
+        self._register_settings_persistence()
         
         self.overlay_window = None
 
         # Start animation tick loop
         self.animate_hud()
+
+        if initial_url:
+            self.url_entry.insert(0, initial_url)
+            self.after(250, self.start_download_process)
+
+    def _register_settings_persistence(self):
+        for variable in (
+            self.download_path,
+            self.quality_selection,
+            self.playlist_var,
+            self.queue_mode,
+            self.sort_order,
+        ):
+            variable.trace_add("write", self._persist_settings)
+
+    def _persist_settings(self, *_args):
+        settings = AppSettings(
+            download_directory=self.download_path.get(),
+            quality=self.quality_selection.get(),
+            playlist=self.playlist_var.get() == "on",
+            queue_mode=self.queue_mode.get(),
+            sort_order=self.sort_order.get(),
+        )
+        try:
+            self.settings_store.save(settings)
+        except OSError as error:
+            # Settings failures should not terminate an active download.
+            if hasattr(self, "status_label"):
+                self.status_label.configure(text=f"STATUS: SETTINGS NOT SAVED ({error})")
 
     def create_header(self):
         header_frame = ctk.CTkFrame(self, fg_color=self.panel_color, corner_radius=4, border_width=1, border_color=self.neon_cyan)
@@ -170,21 +211,20 @@ class AnyFileDownloaderApp(ctk.CTk):
 
         self.quality_dropdown = ctk.CTkComboBox(
             qual_box_frame, 
-            values=["Auto", "1080p MP4", "720p MP4", "480p MP4", "Best Audio (MP3)", "Document (EPUB/PDF)"],
+            values=list(QUALITY_OPTIONS),
+            variable=self.quality_selection,
             width=175,
             font=("Consolas", 11),
             fg_color="#020408",
             border_color=self.neon_cyan,
             dropdown_fg_color="#050911"
         )
-        self.quality_dropdown.set("Auto")
         self.quality_dropdown.pack()
 
         # Playlist Checkbox
         playlist_box_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
         playlist_box_frame.pack(side="left", padx=15, pady=10)
 
-        self.playlist_var = ctk.StringVar(value="off")
         self.playlist_checkbox = ctk.CTkCheckBox(
             playlist_box_frame, 
             text="Download Playlist", 
@@ -318,7 +358,7 @@ class AnyFileDownloaderApp(ctk.CTk):
             # Idle static dashes
             self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=45, extent=60, outline="#374151", width=2, style="arc")
             self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=225, extent=60, outline="#374151", width=2, style="arc")
-            center_text = "0%"
+            center_text = f"{self.current_progress_pct}%"
             next_tick = 200
 
         # Center percentage text
@@ -397,7 +437,24 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.current_progress_pct = 1
         self.status_label.configure(text="STATUS: INITIALIZING DATA STREAM...")
 
-        threading.Thread(target=self._run_downloader_manager, args=(urls,), daemon=True).start()
+        request_metadata = {}
+        initial_url = self.initial_request_metadata.get("url")
+        if initial_url in urls:
+            request_metadata[initial_url] = dict(self.initial_request_metadata)
+        self.initial_request_metadata = {}
+        download_options = {
+            "output_dir": self.download_path.get(),
+            "selected_quality": self.quality_selection.get(),
+            "is_playlist": self.playlist_var.get() == "on",
+            "sorting_setting": self.sort_order.get(),
+            "queue_mode": self.queue_mode.get(),
+        }
+
+        threading.Thread(
+            target=self._run_downloader_manager,
+            args=(urls, request_metadata, download_options),
+            daemon=True,
+        ).start()
 
     def _yt_dlp_progress_hook(self, d):
         """Real-time progress hook from yt-dlp to update HUD and progress bar."""
@@ -431,7 +488,7 @@ class AnyFileDownloaderApp(ctk.CTk):
         clean_url = urllib.parse.urlparse(url).path.lower()
         return any(clean_url.endswith(ext) for ext in DIRECT_EXTENSIONS)
 
-    def _download_direct_file(self, url, output_dir):
+    def _download_direct_file(self, url, output_dir, suggested_title=None):
         """Chunked HTTP/HTTPS streaming downloader with live throughput and progress metrics."""
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -441,23 +498,9 @@ class AnyFileDownloaderApp(ctk.CTk):
             content_length = response.headers.get('Content-Length')
             total_size = int(content_length) if content_length else 0
             
-            # Determine filename
             cd = response.headers.get('Content-Disposition')
-            filename = None
-            if cd:
-                fname_match = re.findall(r'filename\*?=([^;]+)', cd)
-                if fname_match:
-                    filename = fname_match[0].strip(' "\'')
-                    if filename.lower().startswith("utf-8''"):
-                        filename = urllib.parse.unquote(filename[7:])
-            
-            if not filename:
-                parsed_path = urllib.parse.urlparse(url).path
-                filename = os.path.basename(urllib.parse.unquote(parsed_path))
-                if not filename:
-                    filename = f"downloaded_file_{int(time.time())}.dat"
-
-            target_path = os.path.join(output_dir, filename)
+            filename = filename_from_response(url, cd, suggested_title)
+            final_path, part_path = reserve_download_path(output_dir, filename)
             
             chunk_size = 64 * 1024
             downloaded = 0
@@ -465,38 +508,49 @@ class AnyFileDownloaderApp(ctk.CTk):
             last_calc_time = start_time
             last_downloaded = 0
 
-            with open(target_path, 'wb') as f:
-                while True:
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    
-                    now = time.time()
-                    dt = now - last_calc_time
-                    if dt >= 0.2:
-                        bytes_diff = downloaded - last_downloaded
-                        speed_mbps = (bytes_diff / dt) / (1024 * 1024) if dt > 0 else 0.0
-                        pct = int(downloaded / total_size * 100) if total_size > 0 else 50
-                        eta = int((total_size - downloaded) / (bytes_diff / dt)) if total_size > 0 and bytes_diff > 0 else 0
-                        eta_str = f"{eta // 60:02d}:{eta % 60:02d}" if eta else "--:--"
+            try:
+                with open(part_path, 'wb') as f:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
 
-                        self.current_progress_pct = pct
-                        self.current_speed_mbps = speed_mbps
-                        last_calc_time = now
-                        last_downloaded = downloaded
+                        now = time.time()
+                        dt = now - last_calc_time
+                        if dt >= 0.2:
+                            bytes_diff = downloaded - last_downloaded
+                            speed_mbps = (bytes_diff / dt) / (1024 * 1024) if dt > 0 else 0.0
+                            pct = int(downloaded / total_size * 100) if total_size > 0 else 50
+                            eta = int((total_size - downloaded) / (bytes_diff / dt)) if total_size > 0 and bytes_diff > 0 else 0
+                            eta_str = f"{eta // 60:02d}:{eta % 60:02d}" if eta else "--:--"
 
-                        self.after(0, lambda p=pct, s=speed_mbps, e=eta_str: (
-                            self.progress_bar.set(p / 100.0),
-                            self.speed_time_label.configure(text=f"Speed: {s:.2f} MB/s | ETA: {e} | Progress: {p}%")
-                        ))
+                            self.current_progress_pct = pct
+                            self.current_speed_mbps = speed_mbps
+                            last_calc_time = now
+                            last_downloaded = downloaded
 
-    def _download_single_url(self, url, output_dir, selected_quality, is_playlist, sorting_setting):
+                            self.after(0, lambda p=pct, s=speed_mbps, e=eta_str: (
+                                self.progress_bar.set(p / 100.0),
+                                self.speed_time_label.configure(text=f"Speed: {s:.2f} MB/s | ETA: {e} | Progress: {p}%")
+                            ))
+
+                if total_size and downloaded != total_size:
+                    raise IOError(f"Incomplete download: expected {total_size} bytes, received {downloaded}")
+                return finalize_download(part_path, final_path)
+            except Exception:
+                try:
+                    part_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+
+    def _download_single_url(self, url, output_dir, selected_quality, is_playlist, sorting_setting, suggested_title=None):
         """Processes a single URL using direct stream or yt-dlp with appropriate fallback."""
         if self._is_direct_download(url, selected_quality):
             try:
-                self._download_direct_file(url, output_dir)
+                self._download_direct_file(url, output_dir, suggested_title)
                 return
             except Exception as e:
                 if yt_dlp is None:
@@ -504,49 +558,43 @@ class AnyFileDownloaderApp(ctk.CTk):
                 # Fallback to yt-dlp if direct download fails
         
         if yt_dlp is None:
-            # Fallback simulator when yt-dlp is not installed
-            for i in range(1, 11):
-                time.sleep(0.25)
-                sim_speed = 6.0 if i % 2 == 0 else 2.5
-                self.current_speed_mbps = sim_speed
-                pct = i * 10
-                self.current_progress_pct = pct
-                self.after(0, lambda p=pct/100.0, s=sim_speed, pc=pct: (
-                    self.progress_bar.set(p),
-                    self.speed_time_label.configure(text=f"Speed: {s:.1f} MB/s | Progress: {pc}%")
-                ))
-            return
+            raise RuntimeError("yt-dlp is required for this URL but is not installed")
 
         # Prepare yt-dlp options
         ydl_opts = {
             'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
             'concurrent_fragment_downloads': 4,
             'progress_hooks': [self._yt_dlp_progress_hook],
-            'ignoreerrors': True,
+            'ignoreerrors': False,
+            'overwrites': False,
         }
 
         if selected_quality == "1080p MP4":
-            if self.has_ffmpeg:
-                ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best'
-            else:
-                ydl_opts['format'] = 'best[height<=1080]/best'
+            if not self.has_ffmpeg:
+                raise RuntimeError("FFmpeg is required to create the requested 1080p MP4 file")
+            ydl_opts['format'] = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]'
+            ydl_opts['merge_output_format'] = 'mp4'
         elif selected_quality == "720p MP4":
-            if self.has_ffmpeg:
-                ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]/best'
-            else:
-                ydl_opts['format'] = 'best[height<=720]/best'
+            if not self.has_ffmpeg:
+                raise RuntimeError("FFmpeg is required to create the requested 720p MP4 file")
+            ydl_opts['format'] = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]'
+            ydl_opts['merge_output_format'] = 'mp4'
         elif selected_quality == "480p MP4":
-            ydl_opts['format'] = 'best[height<=480]/best'
+            if not self.has_ffmpeg:
+                raise RuntimeError("FFmpeg is required to create the requested 480p MP4 file")
+            ydl_opts['format'] = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]'
+            ydl_opts['merge_output_format'] = 'mp4'
         elif selected_quality == "Best Audio (MP3)":
+            if not self.has_ffmpeg:
+                raise RuntimeError("FFmpeg is required to convert the requested audio to MP3")
             ydl_opts['format'] = 'bestaudio/best'
-            if self.has_ffmpeg:
-                ydl_opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
         else:
-            ydl_opts['format'] = 'best/bestvideo+bestaudio'
+            ydl_opts['format'] = 'bestvideo+bestaudio/best' if self.has_ffmpeg else 'best'
 
         if not is_playlist:
             ydl_opts['noplaylist'] = True
@@ -556,17 +604,21 @@ class AnyFileDownloaderApp(ctk.CTk):
                 ydl_opts['playlist_reverse'] = True
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            result = ydl.download([url])
+            if result:
+                raise RuntimeError(f"yt-dlp failed with exit status {result}")
 
-    def _run_downloader_manager(self, urls):
+    def _run_downloader_manager(self, urls, request_metadata=None, download_options=None):
         """Manages queue execution (Parallel vs Sequential) across all parsed URLs."""
-        output_dir = self.download_path.get()
+        request_metadata = request_metadata or {}
+        download_options = download_options or {}
+        output_dir = download_options.get("output_dir", str(Path.home() / "Downloads"))
         os.makedirs(output_dir, exist_ok=True)
         
-        selected_quality = self.quality_dropdown.get()
-        is_playlist = (self.playlist_var.get() == "on")
-        sorting_setting = self.sort_order.get()
-        queue_mode = self.queue_mode.get()
+        selected_quality = download_options.get("selected_quality", "Auto")
+        is_playlist = download_options.get("is_playlist", False)
+        sorting_setting = download_options.get("sorting_setting", "Newest to Oldest")
+        queue_mode = download_options.get("queue_mode", "All at once")
 
         # Handle sorting for sequential mode
         if queue_mode == "Sequential" and sorting_setting == "Oldest to Newest":
@@ -585,7 +637,15 @@ class AnyFileDownloaderApp(ctk.CTk):
                 ))
                 with ThreadPoolExecutor(max_workers=min(4, total_items)) as executor:
                     futures = [
-                        executor.submit(self._download_single_url, u, output_dir, selected_quality, is_playlist, sorting_setting)
+                        executor.submit(
+                            self._download_single_url,
+                            u,
+                            output_dir,
+                            selected_quality,
+                            is_playlist,
+                            sorting_setting,
+                            request_metadata.get(u, {}).get("title"),
+                        )
                         for u in urls_to_process
                     ]
                     for f in futures:
@@ -600,20 +660,27 @@ class AnyFileDownloaderApp(ctk.CTk):
                         text=f"STATUS: TRANSMITTING LINK [{i}/{tot}]..."
                     ))
                     try:
-                        self._download_single_url(u, output_dir, selected_quality, is_playlist, sorting_setting)
+                        self._download_single_url(
+                            u,
+                            output_dir,
+                            selected_quality,
+                            is_playlist,
+                            sorting_setting,
+                            request_metadata.get(u, {}).get("title"),
+                        )
                     except Exception as e:
                         errors.append(f"Link {idx} ({u}): {str(e)}")
 
             if errors and len(errors) == total_items:
                 raise Exception("\n".join(errors))
 
-            self.after(0, lambda: self._on_download_complete(output_dir, errors))
+            self.after(0, lambda: self._on_download_complete(errors))
 
         except Exception as e:
             error_msg = str(e)
             self.after(0, lambda: self._on_download_error(error_msg))
 
-    def _on_download_complete(self, output_dir, errors=None):
+    def _on_download_complete(self, errors=None):
         self.is_downloading = False
         self.current_speed_mbps = 0.0
         self.current_progress_pct = 100
@@ -623,16 +690,9 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.download_btn.configure(state="normal", text="INITIATE DATA TRANSFER")
 
         if errors:
+            self.status_label.configure(text="STATUS: TRANSFER COMPLETE WITH WARNINGS")
             warning_text = f"Files downloaded with some warnings:\n" + "\n".join(errors[:3])
             messagebox.showwarning("Transfer Notice", warning_text)
-
-        if messagebox.askyesno("Transfer Complete", "Files downloaded successfully!\nWould you like to open the destination folder?"):
-            if os.name == 'nt':
-                os.startfile(output_dir)
-            elif sys.platform == 'darwin':
-                subprocess.Popen(['open', output_dir])
-            else:
-                subprocess.Popen(['xdg-open', output_dir])
 
     def _on_download_error(self, err_text):
         self.is_downloading = False
@@ -644,6 +704,15 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.download_btn.configure(state="normal", text="INITIATE DATA TRANSFER")
         messagebox.showerror("Transfer Error", f"An error occurred during data stream:\n{err_text}")
 
+def parse_command_line():
+    parser = argparse.ArgumentParser(description="AnyFileDownloader desktop application")
+    parser.add_argument("--download-url", default="", help="URL forwarded by the native messaging host")
+    parser.add_argument("--page-url", default="", help="Source page URL supplied by the browser")
+    parser.add_argument("--title", default="", help="Suggested page/media title supplied by the browser")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    app = AnyFileDownloaderApp()
+    arguments = parse_command_line()
+    app = AnyFileDownloaderApp(arguments.download_url, arguments.page_url, arguments.title)
     app.mainloop()
