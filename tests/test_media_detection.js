@@ -26,4 +26,13 @@ candidates = detection.deduplicateCandidates(candidates, differentSignature);
 assert.equal(candidates.length, 2);
 assert.match(candidates[0].url, /signature=one$/);
 
+const ranked = detection.rankCandidates([
+  { url: "https://audio.example/song.mp3", detected_type: "AUDIO", first_seen: 1 },
+  { url: "https://video.example/movie.mp4", detected_type: "VIDEO", content_length: 20_000_000, first_seen: 1 },
+  { url: "https://hls.example/media.m3u8", detected_type: "HLS", first_seen: 1 },
+  { url: "https://dash.example/manifest.mpd", detected_type: "DASH", first_seen: 1 },
+  { url: "https://hls.example/master.m3u8", detected_type: "HLS", first_seen: 1 }
+]);
+assert.deepEqual(ranked.map((item) => item.detected_type), ["HLS", "DASH", "VIDEO", "AUDIO", "HLS"]);
+
 console.log("media_detection.js tests passed");

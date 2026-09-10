@@ -88,6 +88,25 @@ button:disabled {
   color: #4ade80;
 }
 
+details {
+  color: #9ca3af;
+  font-size: 0.78rem;
+}
+
+summary {
+  cursor: pointer;
+}
+
+#candidate-debug {
+  margin: 6px 0 0;
+  padding: 8px;
+  border: 1px solid #1c2541;
+  background: #050911;
+  color: #c7f9ff;
+  font: 0.72rem/1.45 monospace;
+  white-space: pre-wrap;
+}
+
 #request-status {
   min-height: 2.5em;
 }

@@ -1,10 +1,12 @@
 import io
 import json
+import os
 import struct
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from native_host import encode_message, handle_message, read_message, run, validate_download_request
+from native_host import desktop_command, encode_message, handle_message, read_message, run, validate_download_request
 
 
 class NativeMessageTests(unittest.TestCase):
@@ -54,6 +56,18 @@ class NativeMessageTests(unittest.TestCase):
         self.assertEqual(request["source"], "webRequest")
         self.assertIn("token=abc", request["url"])
 
+    def test_development_launch_path_is_absolute_and_not_cwd_dependent(self):
+        request = validate_download_request({
+            "action": "download",
+            "url": "https://example.com/video.mp4",
+        })
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANYFILEDOWNLOADER_APP", None)
+            command = desktop_command(request)
+        desktop_script = Path(command[1])
+        self.assertTrue(desktop_script.is_absolute())
+        self.assertEqual(desktop_script.name, "downloader.py")
+
     def test_ping_does_not_launch_downloader(self):
         with patch("native_host.forward_download_request") as forward:
             response = handle_message({"action": "ping"})
@@ -69,7 +83,7 @@ class NativeMessageTests(unittest.TestCase):
         self.assertEqual(response["status"], "ready")
 
     def test_launch_failure_is_structured(self):
-        with self.assertLogs("anyfiledownloader.native_host", level="ERROR"):
+        with self.assertLogs("anyfiledownloader.native_host", level="INFO"):
             with patch("native_host.forward_download_request", side_effect=OSError("missing app")):
                 response = handle_message({"action": "download", "url": "https://example.com/video.mp4"})
         self.assertFalse(response["ok"])

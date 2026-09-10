@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import stat
@@ -44,7 +45,9 @@ def write_host_manifest(extension_id: str, host_path: Path, output_path: Path) -
 
 
 def write_launcher(python_path: Path, host_path: Path, output_path: Path) -> None:
-    resolved_python = python_path.expanduser().resolve()
+    # Preserve virtual-environment interpreter paths instead of resolving their
+    # symlink to the system Python, which would lose venv package discovery.
+    resolved_python = Path(os.path.abspath(str(python_path.expanduser())))
     resolved_host = host_path.expanduser().resolve()
     if not resolved_python.is_file():
         raise ValueError(f"Python interpreter does not exist: {resolved_python}")

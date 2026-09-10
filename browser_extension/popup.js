@@ -4,6 +4,7 @@ const manualButton = document.querySelector("#download-manual");
 const manualInput = document.querySelector("#manual-url");
 const nativeStatus = document.querySelector("#native-status");
 const requestStatus = document.querySelector("#request-status");
+const candidateDebug = document.querySelector("#candidate-debug");
 
 let activeTab = null;
 let candidates = [];
@@ -18,10 +19,40 @@ function readableName(candidate) {
   }
 }
 
+function candidateHost(candidate) {
+  try {
+    return new URL(candidate.url).hostname;
+  } catch (_error) {
+    return "unknown-host";
+  }
+}
+
+function renderCandidateDebug() {
+  const candidate = candidates[Number(candidateList.value)];
+  if (!candidate) {
+    candidateDebug.textContent = "No candidate selected.";
+    return;
+  }
+  let hasQuery = false;
+  try {
+    hasQuery = Boolean(new URL(candidate.url).search);
+  } catch (_error) {
+    hasQuery = false;
+  }
+  candidateDebug.textContent = [
+    `Type: ${candidate.detected_type || "unknown"}`,
+    `Source: ${candidate.source || "unknown"}`,
+    `Host: ${candidateHost(candidate)}`,
+    `MIME: ${candidate.mime_type || "unknown"}`,
+    `Query parameters: ${hasQuery ? "yes (values hidden)" : "no"}`,
+    `Page/Referer context: ${candidate.referer || candidate.page_url ? "available" : "missing"}`
+  ].join("\n");
+}
+
 function errorMessage(response) {
   const error = response?.error;
   if (typeof error === "string") return error;
-  if (error?.code === "native_host_unavailable") return "Native host unavailable. Run the Linux registration script.";
+  if (error?.code === "native_host_unavailable") return `Native host unavailable: ${error.message}`;
   if (error?.code === "invalid_request") return `Invalid request: ${error.message}`;
   if (error?.code === "launch_failed") return `Downloader launch failed: ${error.message}`;
   return error?.message || "Unknown native messaging error";
@@ -32,12 +63,13 @@ function renderCandidates() {
   for (const [index, candidate] of candidates.entries()) {
     const option = document.createElement("option");
     option.value = String(index);
-    option.textContent = `[${candidate.detected_type}] ${readableName(candidate)}`;
-    option.title = candidate.url;
+    option.textContent = `${candidate.detected_type} • ${candidateHost(candidate)} • ${readableName(candidate)}`;
+    option.title = `${candidate.detected_type} from ${candidateHost(candidate)}`;
     candidateList.append(option);
   }
   if (candidates.length) candidateList.selectedIndex = 0;
   selectedButton.disabled = candidates.length === 0;
+  renderCandidateDebug();
 }
 
 function setSendingState(isSending, text) {
@@ -62,6 +94,8 @@ selectedButton.addEventListener("click", () => {
   if (selected) sendCandidate(selected);
 });
 
+candidateList.addEventListener("change", renderCandidateDebug);
+
 manualButton.addEventListener("click", () => {
   const url = MediaDetection.stripFragment(manualInput.value.trim());
   if (!/^https?:\/\//i.test(url) && !/^ftp:\/\//i.test(url)) {
@@ -84,7 +118,7 @@ manualButton.addEventListener("click", () => {
 
 chrome.runtime.sendMessage({ type: "check-native-host" }, (response) => {
   if (chrome.runtime.lastError) {
-    nativeStatus.textContent = "Native host unavailable";
+    nativeStatus.textContent = `Native host unavailable: ${chrome.runtime.lastError.message}`;
     return;
   }
   nativeStatus.textContent = response?.ok ? "Native host connected" : errorMessage(response);

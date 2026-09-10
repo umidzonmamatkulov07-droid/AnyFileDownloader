@@ -13,7 +13,11 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox, Canvas
 
 from app_settings import AppSettings, QUALITY_OPTIONS, SettingsStore
+from diagnostics import configure_logging, log_event, redact_diagnostic, redact_url
+from download_errors import DownloadFailure, hls_validation_failure, map_exception
+from ffmpeg_fallback import run_ffmpeg_hls_fallback
 from filename_resolver import filename_from_response, finalize_download, reserve_download_path
+from hls_validation import validate_hls_url
 from media_types import classify_media, is_direct_media_url
 
 # Ensure yt-dlp is available or handled gracefully
@@ -27,7 +31,24 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
 # Common direct file extensions that can be streamed directly via HTTP
-APP_VERSION = "3.1-recovery.2"
+APP_VERSION = "3.1-recovery.3"
+LOGGER = configure_logging("anyfiledownloader.desktop")
+
+
+class PrivacySafeYTDLPLogger:
+    """Route yt-dlp messages into redacted development diagnostics."""
+
+    def debug(self, message):
+        if message.startswith("[debug] "):
+            LOGGER.debug("yt-dlp: %s", redact_diagnostic(message))
+        else:
+            LOGGER.info("yt-dlp: %s", redact_diagnostic(message))
+
+    def warning(self, message):
+        LOGGER.warning("yt-dlp: %s", redact_diagnostic(message))
+
+    def error(self, message):
+        LOGGER.error("yt-dlp: %s", redact_diagnostic(message))
 
 DIRECT_FILE_EXTENSIONS = (
     '.pdf', '.epub', '.mobi', '.azw3', '.djvu', '.doc', '.docx', '.ppt', '.pptx',
@@ -39,7 +60,7 @@ class AnyFileDownloaderApp(ctk.CTk):
     def __init__(self, initial_url="", initial_page_url="", initial_title="", initial_context=None):
         super().__init__()
 
-        self.title(f"ANY FILEDOWNLOADER {APP_VERSION} [RECOVERY DEVELOPMENT]")
+        self.title(f"ANY FILEDOWNLOADER {APP_VERSION} [HOLOGRAM_EDITION]")
         self.geometry("820x700")
         self.minsize(750, 650)
         self.resizable(False, False)
@@ -83,6 +104,7 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.current_speed_mbps = 0.0
         self.current_progress_pct = 0
         self.has_ffmpeg = bool(shutil.which("ffmpeg"))
+        log_event(LOGGER, "desktop_started", detected_type=self.initial_request_metadata.get("detected_type"))
 
         # Build UI Structure with Hologram Styling
         self.create_header()
@@ -129,7 +151,7 @@ class AnyFileDownloaderApp(ctk.CTk):
 
         logo_lbl = ctk.CTkLabel(
             header_frame, 
-            text=f"[AF]  ANY FILEDOWNLOADER {APP_VERSION} [RECOVERY]",
+            text=f"[AF]  ANY FILEDOWNLOADER {APP_VERSION} [HOLOGRAM]",
             font=("Consolas", 15, "bold"), 
             text_color=self.neon_cyan
         )
@@ -571,17 +593,56 @@ class AnyFileDownloaderApp(ctk.CTk):
     def _download_single_url(self, url, output_dir, selected_quality, is_playlist, sorting_setting, request_context=None):
         """Processes a single URL using direct stream or yt-dlp with appropriate fallback."""
         request_context = request_context or {}
+        detected_type = (
+            request_context.get("detected_type")
+            or classify_media(url, request_context.get("mime_type", ""))
+            or "UNKNOWN"
+        ).upper()
+
         if self._is_direct_download(url, selected_quality, request_context):
+            log_event(LOGGER, "dispatch_selected", url, request_context, detected_type=detected_type, category="direct")
             try:
-                self._download_direct_file(url, output_dir, request_context)
+                final_path = self._download_direct_file(url, output_dir, request_context)
+                log_event(LOGGER, "download_succeeded", url, request_context, detected_type=detected_type, category="direct")
                 return
-            except Exception as e:
+            except Exception as error:
+                failure = map_exception(error)
+                log_event(
+                    LOGGER,
+                    "direct_download_failed",
+                    url,
+                    request_context,
+                    detected_type=detected_type,
+                    category=failure.category,
+                )
                 if yt_dlp is None:
-                    raise e
+                    raise failure from error
                 # Fallback to yt-dlp if direct download fails
-        
+
+        download_url = url
+        hls_validation = None
+        if detected_type == "HLS":
+            log_event(LOGGER, "hls_validation_started", url, request_context, detected_type=detected_type)
+            hls_validation = validate_hls_url(url, request_context)
+            log_event(
+                LOGGER,
+                "hls_validation_result",
+                url,
+                request_context,
+                detected_type=detected_type,
+                status_code=hls_validation.status_code,
+                content_type=hls_validation.content_type,
+                reason=hls_validation.reason,
+                hls_kind=hls_validation.playlist_type,
+            )
+            if not hls_validation.valid:
+                raise hls_validation_failure(hls_validation.reason, hls_validation.status_code)
+            download_url = hls_validation.final_url
+
         if yt_dlp is None:
-            raise RuntimeError("yt-dlp is required for this URL but is not installed")
+            if detected_type == "HLS" and selected_quality != "Best Audio (MP3)":
+                return self._run_hls_ffmpeg_fallback(download_url, output_dir, request_context)
+            raise DownloadFailure("unsupported_media", "yt-dlp is required for this URL but is not installed.")
 
         # Prepare yt-dlp options
         ydl_opts = {
@@ -590,6 +651,7 @@ class AnyFileDownloaderApp(ctk.CTk):
             'progress_hooks': [self._yt_dlp_progress_hook],
             'ignoreerrors': False,
             'overwrites': False,
+            'logger': PrivacySafeYTDLPLogger(),
         }
         http_headers = {}
         referer = request_context.get('referer') or request_context.get('page_url')
@@ -604,22 +666,22 @@ class AnyFileDownloaderApp(ctk.CTk):
 
         if selected_quality == "1080p MP4":
             if not self.has_ffmpeg:
-                raise RuntimeError("FFmpeg is required to create the requested 1080p MP4 file")
+                raise DownloadFailure("ffmpeg_unavailable", "FFmpeg is required to create the requested 1080p MP4 file.")
             ydl_opts['format'] = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]'
             ydl_opts['merge_output_format'] = 'mp4'
         elif selected_quality == "720p MP4":
             if not self.has_ffmpeg:
-                raise RuntimeError("FFmpeg is required to create the requested 720p MP4 file")
+                raise DownloadFailure("ffmpeg_unavailable", "FFmpeg is required to create the requested 720p MP4 file.")
             ydl_opts['format'] = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]'
             ydl_opts['merge_output_format'] = 'mp4'
         elif selected_quality == "480p MP4":
             if not self.has_ffmpeg:
-                raise RuntimeError("FFmpeg is required to create the requested 480p MP4 file")
+                raise DownloadFailure("ffmpeg_unavailable", "FFmpeg is required to create the requested 480p MP4 file.")
             ydl_opts['format'] = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]'
             ydl_opts['merge_output_format'] = 'mp4'
         elif selected_quality == "Best Audio (MP3)":
             if not self.has_ffmpeg:
-                raise RuntimeError("FFmpeg is required to convert the requested audio to MP3")
+                raise DownloadFailure("ffmpeg_unavailable", "FFmpeg is required to convert the requested audio to MP3.")
             ydl_opts['format'] = 'bestaudio/best'
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
@@ -636,17 +698,71 @@ class AnyFileDownloaderApp(ctk.CTk):
             if sorting_setting == "Newest to Oldest":
                 ydl_opts['playlist_reverse'] = True
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.download([url])
-            if result:
-                raise RuntimeError(f"yt-dlp failed with exit status {result}")
+        log_event(LOGGER, "yt_dlp_started", download_url, request_context, detected_type=detected_type)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                result = ydl.download([download_url])
+                if result:
+                    raise DownloadFailure("yt_dlp_failure", f"yt-dlp failed with exit status {result}.")
+        except Exception as error:
+            failure = map_exception(error, "yt_dlp_failure")
+            log_event(
+                LOGGER,
+                "yt_dlp_failed",
+                download_url,
+                request_context,
+                detected_type=detected_type,
+                category=failure.category,
+            )
+            if (
+                detected_type == "HLS"
+                and selected_quality != "Best Audio (MP3)"
+                and hls_validation
+                and hls_validation.valid
+            ):
+                return self._run_hls_ffmpeg_fallback(download_url, output_dir, request_context)
+            diagnostic = redact_diagnostic(str(error))
+            if diagnostic:
+                LOGGER.warning("yt-dlp diagnostic: %s", diagnostic)
+            raise DownloadFailure("yt_dlp_failure", "yt-dlp could not download the selected media.", diagnostic) from error
+
+        log_event(LOGGER, "download_succeeded", download_url, request_context, detected_type=detected_type, category="yt_dlp")
+
+    def _run_hls_ffmpeg_fallback(self, url, output_dir, request_context):
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            raise DownloadFailure(
+                "ffmpeg_unavailable",
+                "yt-dlp could not handle the valid HLS playlist and FFmpeg is unavailable.",
+            )
+        log_event(LOGGER, "ffmpeg_fallback_started", url, request_context, detected_type="HLS")
+        try:
+            final_path = run_ffmpeg_hls_fallback(
+                ffmpeg_path,
+                url,
+                output_dir,
+                request_context.get("title") or "hls_download",
+                request_context,
+            )
+        except DownloadFailure as error:
+            log_event(LOGGER, "ffmpeg_fallback_failed", url, request_context, category=error.category)
+            if error.diagnostic:
+                LOGGER.warning("FFmpeg diagnostic: %s", redact_diagnostic(error.diagnostic))
+            raise
+        log_event(LOGGER, "download_succeeded", url, request_context, detected_type="HLS", category="ffmpeg")
+        return final_path
 
     def _run_downloader_manager(self, urls, request_metadata=None, download_options=None):
         """Manages queue execution (Parallel vs Sequential) across all parsed URLs."""
         request_metadata = request_metadata or {}
         download_options = download_options or {}
         output_dir = download_options.get("output_dir", str(Path.home() / "Downloads"))
-        os.makedirs(output_dir, exist_ok=True)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as error:
+            failure = DownloadFailure("filesystem_error", "Could not create the download directory.", str(error))
+            self.after(0, lambda: self._on_download_error(str(failure)))
+            return
         
         selected_quality = download_options.get("selected_quality", "Auto")
         is_playlist = download_options.get("is_playlist", False)
@@ -702,7 +818,7 @@ class AnyFileDownloaderApp(ctk.CTk):
                             request_metadata.get(u, {}),
                         )
                     except Exception as e:
-                        errors.append(f"Link {idx} ({u}): {str(e)}")
+                        errors.append(f"Link {idx} ({redact_url(u)}): {str(e)}")
 
             if errors and len(errors) == total_items:
                 raise Exception("\n".join(errors))
@@ -711,6 +827,7 @@ class AnyFileDownloaderApp(ctk.CTk):
 
         except Exception as e:
             error_msg = str(e)
+            log_event(LOGGER, "download_failed", category=getattr(e, "category", "download_error"))
             self.after(0, lambda: self._on_download_error(error_msg))
 
     def _on_download_complete(self, errors=None):

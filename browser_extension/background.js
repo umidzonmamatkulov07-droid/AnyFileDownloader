@@ -1,7 +1,6 @@
 importScripts("media_detection.js");
 
 const NATIVE_HOST_NAME = "com.anyfiledownloader.native_host";
-const MAX_CANDIDATES_PER_TAB = 100;
 const MAX_TRANSPORT_STREAM_CANDIDATES_PER_TAB = 10;
 const MIN_DIRECT_RESOURCE_BYTES = 64 * 1024;
 const updateChains = new Map();
@@ -40,6 +39,7 @@ async function addCandidate(tabId, rawCandidate) {
   const key = storageKey(tabId);
   const stored = await chrome.storage.session.get(key);
   const candidates = Array.isArray(stored[key]) ? stored[key] : [];
+  const isDuplicate = candidates.some((item) => MediaDetection.stripFragment(item.url) === candidate.url);
   const isNewTransportStream =
     MediaDetection.extensionForUrl(candidate.url) === ".ts" &&
     !candidates.some((item) => item.url === candidate.url);
@@ -50,8 +50,14 @@ async function addCandidate(tabId, rawCandidate) {
   ) {
     return;
   }
-  const updated = MediaDetection.deduplicateCandidates(candidates, candidate, MAX_CANDIDATES_PER_TAB);
+  const updated = MediaDetection.deduplicateCandidates(candidates, candidate);
   await chrome.storage.session.set({ [key]: updated });
+  console.debug(`[AFD] candidate ${isDuplicate ? "duplicate merged" : "detected"}`, {
+    type: candidate.detected_type,
+    source: candidate.source,
+    host: new URL(candidate.url).hostname,
+    hasQuery: Boolean(new URL(candidate.url).search)
+  });
 }
 
 function queueCandidate(tabId, candidate) {
@@ -89,6 +95,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       page_url: details.documentUrl || "",
       detected_type: detectedType,
       mime_type: mimeType,
+      content_length: Number.isFinite(contentLength) ? contentLength : 0,
       source: "webRequest",
       first_seen: details.timeStamp || Date.now(),
       referer: details.documentUrl || details.initiator || "",
@@ -117,7 +124,9 @@ function nativeError(message) {
 function sendNativeRequest(request, sendResponse) {
   chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, request, (response) => {
     if (chrome.runtime.lastError) {
-      sendResponse(nativeError(chrome.runtime.lastError.message));
+      const message = chrome.runtime.lastError.message || "Unknown native messaging error";
+      console.error("[AFD] native host error:", message);
+      sendResponse(nativeError(message));
       return;
     }
     sendResponse(response || {
@@ -141,7 +150,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     chrome.storage.session.get(storageKey(tabId)).then((stored) => {
-      sendResponse({ ok: true, candidates: stored[storageKey(tabId)] || [] });
+      const candidates = stored[storageKey(tabId)] || [];
+      sendResponse({ ok: true, candidates: MediaDetection.rankCandidates(candidates) });
     }).catch((error) => {
       sendResponse({ ok: false, error: { code: "storage_error", message: error.message } });
     });
@@ -155,6 +165,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "send-download") {
     const candidate = message.candidate || {};
+    let host = "";
+    try {
+      host = new URL(candidate.url).hostname;
+    } catch (_error) {
+      host = "invalid";
+    }
+    console.info("[AFD] native download requested", {
+      type: candidate.detected_type || "DIRECT",
+      source: candidate.source || "manual",
+      host
+    });
     sendNativeRequest({
       action: "download",
       url: candidate.url || "",

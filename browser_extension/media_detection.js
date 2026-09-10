@@ -53,13 +53,15 @@
       mime_type: candidate.mime_type || "",
       source: candidate.source || "webRequest",
       first_seen: Number.isFinite(candidate.first_seen) ? candidate.first_seen : Date.now(),
+      content_length: Number.isFinite(candidate.content_length) ? candidate.content_length : 0,
+      hls_kind: candidate.hls_kind || "",
       referer: candidate.referer || candidate.page_url || "",
       origin: candidate.origin || "",
       user_agent: candidate.user_agent || ""
     };
   }
 
-  function deduplicateCandidates(existingCandidates, candidate, maximum = 100) {
+  function deduplicateCandidates(existingCandidates, candidate, maximum = Number.POSITIVE_INFINITY) {
     const normalized = normalizeCandidate(candidate);
     if (!normalized) return existingCandidates.slice();
 
@@ -74,10 +76,39 @@
       updated[existingIndex] = merged;
       return updated;
     }
-    return [...existingCandidates, normalized].slice(-maximum);
+    const combined = [...existingCandidates, normalized];
+    return Number.isFinite(maximum) ? combined.slice(-maximum) : combined;
   }
 
-  const api = { classifyMedia, deduplicateCandidates, extensionForUrl, normalizeCandidate, stripFragment };
+  function candidateRank(candidate) {
+    const type = candidate.detected_type || "";
+    const hlsKind = candidate.hls_kind || "";
+    const looksLikeMaster = /(?:^|[\/_-])master(?:[._/-]|$)/i.test(candidate.url || "");
+    if (type === "HLS" && (hlsKind === "hls_master" || looksLikeMaster)) return 10;
+    if (type === "DASH") return 20;
+    if (type === "VIDEO") return candidate.content_length >= 10 * 1024 * 1024 ? 25 : 30;
+    if (type === "AUDIO") return 40;
+    if (type === "HLS") return 50;
+    return 60;
+  }
+
+  function rankCandidates(candidates) {
+    return candidates.slice().sort((left, right) => {
+      const rankDifference = candidateRank(left) - candidateRank(right);
+      if (rankDifference) return rankDifference;
+      return (left.first_seen || 0) - (right.first_seen || 0);
+    });
+  }
+
+  const api = {
+    candidateRank,
+    classifyMedia,
+    deduplicateCandidates,
+    extensionForUrl,
+    normalizeCandidate,
+    rankCandidates,
+    stripFragment
+  };
   globalObject.MediaDetection = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(globalThis);

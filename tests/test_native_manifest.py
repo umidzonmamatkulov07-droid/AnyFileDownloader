@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import os
+import sys
 from pathlib import Path
 
 from native_manifest import HOST_NAME, build_host_manifest, write_host_manifest, write_launcher
@@ -48,7 +50,23 @@ class NativeManifestTests(unittest.TestCase):
 
             launcher_text = launcher.read_text(encoding="utf-8")
             self.assertIn("'", launcher_text)
+            self.assertIn(str(python_path), launcher_text)
             self.assertTrue(launcher.stat().st_mode & 0o100)
+
+    @unittest.skipIf(os.name == "nt", "Linux launcher symlink behavior")
+    def test_launcher_preserves_virtual_environment_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            venv_python = directory / ".venv" / "bin" / "python"
+            venv_python.parent.mkdir(parents=True)
+            venv_python.symlink_to(Path(sys.executable))
+            host = directory / "native_host.py"
+            launcher = directory / "launcher.sh"
+            host.touch()
+
+            write_launcher(venv_python, host, launcher)
+
+            self.assertIn(str(venv_python), launcher.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

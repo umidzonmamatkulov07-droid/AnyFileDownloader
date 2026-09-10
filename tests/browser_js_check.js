@@ -39,6 +39,14 @@
     });
     assert(duplicate.length === 1, "fragment deduplication");
     assert(signedVariant.length === 2, "signed query preservation");
+    const ranked = MediaDetection.rankCandidates([
+      { url: "https://audio.example/song.mp3", detected_type: "AUDIO" },
+      { url: "https://video.example/movie.mp4", detected_type: "VIDEO", content_length: 20_000_000 },
+      { url: "https://hls.example/media.m3u8", detected_type: "HLS" },
+      { url: "https://dash.example/manifest.mpd", detected_type: "DASH" },
+      { url: "https://hls.example/master.m3u8", detected_type: "HLS" }
+    ]);
+    assert(ranked.map((item) => item.detected_type).join(",") === "HLS,DASH,VIDEO,AUDIO,HLS", "ranking");
     result.textContent = "PASS";
   } catch (error) {
     result.textContent = `FAIL: ${error.message}`;

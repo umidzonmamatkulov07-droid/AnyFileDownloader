@@ -7,7 +7,6 @@ Standard output is reserved exclusively for framed native-messaging responses.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import struct
 import subprocess
@@ -16,9 +15,11 @@ from pathlib import Path
 from typing import BinaryIO, Optional
 from urllib.parse import urlparse
 
+from diagnostics import configure_logging, log_event
+
 
 MAX_MESSAGE_SIZE = 16 * 1024 * 1024
-LOGGER = logging.getLogger("anyfiledownloader.native_host")
+LOGGER = configure_logging("anyfiledownloader.native_host")
 DETECTED_TYPES = {"HLS", "DASH", "VIDEO", "AUDIO", "DIRECT", "UNKNOWN"}
 SOURCES = {"webRequest", "performance", "media_element", "manual"}
 
@@ -159,17 +160,29 @@ def error_response(code: str, message: str) -> dict:
 
 def handle_message(message: dict) -> dict:
     if message.get("action") == "ping":
+        log_event(LOGGER, "native_ping_received")
         return {"ok": True, "action": "ping", "status": "ready"}
     try:
         request = validate_download_request(message)
     except ValueError as error:
+        log_event(LOGGER, "native_request_rejected", category="invalid_request", reason=str(error))
         return error_response("invalid_request", str(error))
+
+    log_event(
+        LOGGER,
+        "native_request_received",
+        request["url"],
+        request,
+        detected_type=request["detected_type"],
+        source=request["source"],
+    )
 
     try:
         process_id = forward_download_request(request)
     except Exception as error:
-        LOGGER.exception("Could not launch AnyFileDownloader")
-        return error_response("launch_failed", str(error))
+        log_event(LOGGER, "gui_launch_failed", category="launch_failed", reason=type(error).__name__)
+        return error_response("launch_failed", "Could not start the AnyFileDownloader desktop application.")
+    log_event(LOGGER, "gui_launched", request["url"], request, detected_type=request["detected_type"])
     return {"ok": True, "action": "download", "status": "accepted", "pid": process_id}
 
 
@@ -178,7 +191,7 @@ def run(input_stream: BinaryIO, output_stream: BinaryIO) -> None:
         try:
             message = read_message(input_stream)
         except Exception as error:
-            LOGGER.exception("Invalid native messaging frame")
+            log_event(LOGGER, "native_frame_rejected", category="invalid_message", reason=type(error).__name__)
             send_message(output_stream, error_response("invalid_message", str(error)))
             return
         if message is None:
@@ -187,7 +200,7 @@ def run(input_stream: BinaryIO, output_stream: BinaryIO) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+    configure_logging("anyfiledownloader.native_host", include_stderr=True)
     run(sys.stdin.buffer, sys.stdout.buffer)
 
 

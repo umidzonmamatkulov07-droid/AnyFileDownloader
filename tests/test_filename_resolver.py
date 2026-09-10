@@ -33,6 +33,18 @@ class FilenameResolverTests(unittest.TestCase):
         )
         self.assertEqual(name, "download.mp4")
 
+    def test_browser_title_cannot_escape_destination(self):
+        name = filename_from_response("https://cdn.example/", suggested_title="../../outside.mp4")
+        self.assertEqual(name, "outside.mp4")
+
+    def test_browser_title_cannot_escape_destination(self):
+        name = filename_from_response(
+            "https://cdn.example/",
+            suggested_title="../../outside.mp4",
+            mime_type="video/mp4",
+        )
+        self.assertEqual(name, "outside.mp4")
+
     def test_duplicate_names_get_numbered_suffixes(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
