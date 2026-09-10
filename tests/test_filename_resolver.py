@@ -25,6 +25,14 @@ class FilenameResolverTests(unittest.TestCase):
         )
         self.assertEqual(name, "A Useful File.pdf")
 
+    def test_known_mime_adds_missing_extension(self):
+        name = filename_from_response(
+            "https://cdn.example/download",
+            suggested_title="Recorded session",
+            mime_type="video/mp4; charset=binary",
+        )
+        self.assertEqual(name, "download.mp4")
+
     def test_duplicate_names_get_numbered_suffixes(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

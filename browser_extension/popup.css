@@ -4,7 +4,7 @@
 }
 
 body {
-  width: 320px;
+  width: 380px;
   margin: 0;
   background: #020408;
   color: #f7fafc;
@@ -16,41 +16,78 @@ main {
   padding: 16px;
 }
 
-label {
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   color: #00f0ff;
+}
+
+section {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid #1c2541;
+}
+
+label {
+  color: #c7f9ff;
+  font-size: 0.86rem;
   font-weight: 600;
 }
 
 input,
+select,
 button {
   box-sizing: border-box;
   width: 100%;
-  min-height: 38px;
   border: 1px solid #00f0ff;
   border-radius: 4px;
 }
 
-input {
+input,
+select {
   padding: 8px;
   background: #050911;
   color: #fff;
 }
 
+select {
+  min-height: 132px;
+}
+
 button {
+  min-height: 38px;
   background: #00f0ff;
   color: #020408;
   cursor: pointer;
   font-weight: 700;
 }
 
-button:disabled {
-  cursor: wait;
-  opacity: 0.65;
+button.secondary {
+  background: #0b132b;
+  color: #00f0ff;
 }
 
-#status {
-  min-height: 2.5em;
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.hint,
+.status {
   margin: 0;
   color: #ffb020;
+  font-size: 0.78rem;
   overflow-wrap: anywhere;
+}
+
+.connected {
+  color: #4ade80;
+}
+
+#request-status {
+  min-height: 2.5em;
 }

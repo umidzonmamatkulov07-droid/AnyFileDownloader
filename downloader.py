@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, Canvas
 
 from app_settings import AppSettings, QUALITY_OPTIONS, SettingsStore
 from filename_resolver import filename_from_response, finalize_download, reserve_download_path
+from media_types import classify_media, is_direct_media_url
 
 # Ensure yt-dlp is available or handled gracefully
 try:
@@ -26,17 +27,19 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
 # Common direct file extensions that can be streamed directly via HTTP
-DIRECT_EXTENSIONS = (
+APP_VERSION = "3.1-recovery.2"
+
+DIRECT_FILE_EXTENSIONS = (
     '.pdf', '.epub', '.mobi', '.azw3', '.djvu', '.doc', '.docx', '.ppt', '.pptx',
     '.xls', '.xlsx', '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.iso',
     '.exe', '.msi', '.apk', '.dmg', '.pkg', '.deb', '.rpm', '.txt', '.csv'
 )
 
 class AnyFileDownloaderApp(ctk.CTk):
-    def __init__(self, initial_url="", initial_page_url="", initial_title=""):
+    def __init__(self, initial_url="", initial_page_url="", initial_title="", initial_context=None):
         super().__init__()
 
-        self.title("ANY FILEDOWNLOADER v3.1 [HOLOGRAM_EDITION]")
+        self.title(f"ANY FILEDOWNLOADER {APP_VERSION} [RECOVERY DEVELOPMENT]")
         self.geometry("820x700")
         self.minsize(750, 650)
         self.resizable(False, False)
@@ -71,6 +74,7 @@ class AnyFileDownloaderApp(ctk.CTk):
             "url": initial_url,
             "page_url": initial_page_url,
             "title": initial_title,
+            **(initial_context or {}),
         }
 
         # Animation states for sci-fi HUD speed scaling
@@ -125,7 +129,7 @@ class AnyFileDownloaderApp(ctk.CTk):
 
         logo_lbl = ctk.CTkLabel(
             header_frame, 
-            text="[AF]  ANY FILEDOWNLOADER v3.1 [HOLOGRAM]", 
+            text=f"[AF]  ANY FILEDOWNLOADER {APP_VERSION} [RECOVERY]",
             font=("Consolas", 15, "bold"), 
             text_color=self.neon_cyan
         )
@@ -421,7 +425,8 @@ class AnyFileDownloaderApp(ctk.CTk):
 
     def start_download_process(self):
         raw_text = self.url_entry.get().strip()
-        urls = self.parse_urls(raw_text)
+        initial_url = self.initial_request_metadata.get("url")
+        urls = [initial_url] if initial_url and raw_text == initial_url else self.parse_urls(raw_text)
         
         if not urls:
             messagebox.showwarning("Missing URL", "Please enter or paste at least one valid link (http:// or https://) first.")
@@ -438,7 +443,6 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.status_label.configure(text="STATUS: INITIALIZING DATA STREAM...")
 
         request_metadata = {}
-        initial_url = self.initial_request_metadata.get("url")
         if initial_url in urls:
             request_metadata[initial_url] = dict(self.initial_request_metadata)
         self.initial_request_metadata = {}
@@ -481,25 +485,43 @@ class AnyFileDownloaderApp(ctk.CTk):
                 self.status_label.configure(text="STATUS: POST-PROCESSING DATA STREAM...")
             ))
 
-    def _is_direct_download(self, url, selected_quality):
+    def _is_direct_download(self, url, selected_quality, request_context=None):
         """Detects if URL points directly to a document/archive or if document mode is chosen."""
+        request_context = request_context or {}
+        detected_type = request_context.get("detected_type") or classify_media(
+            url, request_context.get("mime_type", "")
+        )
+        if detected_type in {"HLS", "DASH"}:
+            return False
         if selected_quality == "Document (EPUB/PDF)":
             return True
         clean_url = urllib.parse.urlparse(url).path.lower()
-        return any(clean_url.endswith(ext) for ext in DIRECT_EXTENSIONS)
+        if any(clean_url.endswith(ext) for ext in DIRECT_FILE_EXTENSIONS):
+            return True
+        return selected_quality == "Auto" and (
+            detected_type in {"VIDEO", "AUDIO"} or is_direct_media_url(url)
+        )
 
-    def _download_direct_file(self, url, output_dir, suggested_title=None):
+    def _download_direct_file(self, url, output_dir, request_context=None):
         """Chunked HTTP/HTTPS streaming downloader with live throughput and progress metrics."""
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        })
+        request_context = request_context or {}
+        request_headers = {
+            'User-Agent': request_context.get('user_agent') or 'Mozilla/5.0 AnyFileDownloader-Recovery'
+        }
+        referer = request_context.get('referer') or request_context.get('page_url')
+        if referer:
+            request_headers['Referer'] = referer
+        if request_context.get('origin'):
+            request_headers['Origin'] = request_context['origin']
+        req = urllib.request.Request(url, headers=request_headers)
         
         with urllib.request.urlopen(req, timeout=30) as response:
             content_length = response.headers.get('Content-Length')
             total_size = int(content_length) if content_length else 0
             
             cd = response.headers.get('Content-Disposition')
-            filename = filename_from_response(url, cd, suggested_title)
+            response_mime = response.headers.get('Content-Type') or request_context.get('mime_type')
+            filename = filename_from_response(url, cd, request_context.get("title"), response_mime)
             final_path, part_path = reserve_download_path(output_dir, filename)
             
             chunk_size = 64 * 1024
@@ -546,11 +568,12 @@ class AnyFileDownloaderApp(ctk.CTk):
                     pass
                 raise
 
-    def _download_single_url(self, url, output_dir, selected_quality, is_playlist, sorting_setting, suggested_title=None):
+    def _download_single_url(self, url, output_dir, selected_quality, is_playlist, sorting_setting, request_context=None):
         """Processes a single URL using direct stream or yt-dlp with appropriate fallback."""
-        if self._is_direct_download(url, selected_quality):
+        request_context = request_context or {}
+        if self._is_direct_download(url, selected_quality, request_context):
             try:
-                self._download_direct_file(url, output_dir, suggested_title)
+                self._download_direct_file(url, output_dir, request_context)
                 return
             except Exception as e:
                 if yt_dlp is None:
@@ -568,6 +591,16 @@ class AnyFileDownloaderApp(ctk.CTk):
             'ignoreerrors': False,
             'overwrites': False,
         }
+        http_headers = {}
+        referer = request_context.get('referer') or request_context.get('page_url')
+        if referer:
+            http_headers['Referer'] = referer
+        if request_context.get('origin'):
+            http_headers['Origin'] = request_context['origin']
+        if request_context.get('user_agent'):
+            http_headers['User-Agent'] = request_context['user_agent']
+        if http_headers:
+            ydl_opts['http_headers'] = http_headers
 
         if selected_quality == "1080p MP4":
             if not self.has_ffmpeg:
@@ -644,7 +677,7 @@ class AnyFileDownloaderApp(ctk.CTk):
                             selected_quality,
                             is_playlist,
                             sorting_setting,
-                            request_metadata.get(u, {}).get("title"),
+                            request_metadata.get(u, {}),
                         )
                         for u in urls_to_process
                     ]
@@ -666,7 +699,7 @@ class AnyFileDownloaderApp(ctk.CTk):
                             selected_quality,
                             is_playlist,
                             sorting_setting,
-                            request_metadata.get(u, {}).get("title"),
+                            request_metadata.get(u, {}),
                         )
                     except Exception as e:
                         errors.append(f"Link {idx} ({u}): {str(e)}")
@@ -709,10 +742,29 @@ def parse_command_line():
     parser.add_argument("--download-url", default="", help="URL forwarded by the native messaging host")
     parser.add_argument("--page-url", default="", help="Source page URL supplied by the browser")
     parser.add_argument("--title", default="", help="Suggested page/media title supplied by the browser")
+    parser.add_argument("--detected-type", default="", help="Browser media classification")
+    parser.add_argument("--mime-type", default="", help="Browser-observed response MIME type")
+    parser.add_argument("--source", default="", help="Browser detection source")
+    parser.add_argument("--referer", default="", help="Safe browser page/referrer context")
+    parser.add_argument("--origin", default="", help="Safe browser origin context")
+    parser.add_argument("--user-agent", default="", help="Browser user agent context")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     arguments = parse_command_line()
-    app = AnyFileDownloaderApp(arguments.download_url, arguments.page_url, arguments.title)
+    initial_context = {
+        "detected_type": arguments.detected_type,
+        "mime_type": arguments.mime_type,
+        "source": arguments.source,
+        "referer": arguments.referer,
+        "origin": arguments.origin,
+        "user_agent": arguments.user_agent,
+    }
+    app = AnyFileDownloaderApp(
+        arguments.download_url,
+        arguments.page_url,
+        arguments.title,
+        initial_context,
+    )
     app.mainloop()

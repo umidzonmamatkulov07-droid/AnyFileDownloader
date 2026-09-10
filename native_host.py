@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Chrome native-messaging bridge for AnyFileDownloader.
 
 Standard output is reserved exclusively for framed native-messaging responses.
@@ -18,6 +19,8 @@ from urllib.parse import urlparse
 
 MAX_MESSAGE_SIZE = 16 * 1024 * 1024
 LOGGER = logging.getLogger("anyfiledownloader.native_host")
+DETECTED_TYPES = {"HLS", "DASH", "VIDEO", "AUDIO", "DIRECT", "UNKNOWN"}
+SOURCES = {"webRequest", "performance", "media_element", "manual"}
 
 
 def _read_exact(stream: BinaryIO, length: int) -> bytes:
@@ -68,13 +71,42 @@ def validate_download_request(message: dict) -> dict:
 
     url = message.get("url")
     parsed_url = urlparse(url) if isinstance(url, str) else None
-    if parsed_url is None or parsed_url.scheme.lower() not in {"http", "https", "ftp"} or not parsed_url.netloc:
+    if (
+        parsed_url is None
+        or "\x00" in url
+        or len(url) > 8192
+        or parsed_url.scheme.lower() not in {"http", "https", "ftp"}
+        or not parsed_url.netloc
+    ):
         raise ValueError("A valid HTTP, HTTPS, or FTP URL is required")
 
     request = {"action": "download", "url": url}
-    for field in ("page_url", "title"):
+    field_limits = {
+        "page_url": 8192,
+        "title": 512,
+        "detected_type": 32,
+        "mime_type": 256,
+        "source": 32,
+        "referer": 8192,
+        "origin": 2048,
+        "user_agent": 1024,
+    }
+    for field, maximum_length in field_limits.items():
         value = message.get(field, "")
-        request[field] = value if isinstance(value, str) else ""
+        if not isinstance(value, str):
+            raise ValueError(f"{field} must be a string")
+        if "\x00" in value:
+            raise ValueError(f"{field} contains an invalid null character")
+        if len(value) > maximum_length:
+            raise ValueError(f"{field} exceeds the size limit")
+        request[field] = value
+
+    request["detected_type"] = request["detected_type"].upper() or "UNKNOWN"
+    if request["detected_type"] not in DETECTED_TYPES:
+        raise ValueError("Unsupported detected_type")
+    request["source"] = request["source"] or "manual"
+    if request["source"] not in SOURCES:
+        raise ValueError("Unsupported source")
     return request
 
 
@@ -89,10 +121,19 @@ def desktop_command(request: dict) -> list[str]:
         command = [sys.executable, str(Path(__file__).with_name("downloader.py"))]
 
     command.extend(["--download-url", request["url"]])
-    if request["page_url"]:
-        command.extend(["--page-url", request["page_url"]])
-    if request["title"]:
-        command.extend(["--title", request["title"]])
+    command_line_fields = {
+        "page_url": "--page-url",
+        "title": "--title",
+        "detected_type": "--detected-type",
+        "mime_type": "--mime-type",
+        "source": "--source",
+        "referer": "--referer",
+        "origin": "--origin",
+        "user_agent": "--user-agent",
+    }
+    for field, option in command_line_fields.items():
+        if request[field]:
+            command.extend([option, request[field]])
     return command
 
 
@@ -112,18 +153,37 @@ def forward_download_request(request: dict) -> int:
     return process.pid
 
 
+def error_response(code: str, message: str) -> dict:
+    return {"ok": False, "error": {"code": code, "message": message}}
+
+
+def handle_message(message: dict) -> dict:
+    if message.get("action") == "ping":
+        return {"ok": True, "action": "ping", "status": "ready"}
+    try:
+        request = validate_download_request(message)
+    except ValueError as error:
+        return error_response("invalid_request", str(error))
+
+    try:
+        process_id = forward_download_request(request)
+    except Exception as error:
+        LOGGER.exception("Could not launch AnyFileDownloader")
+        return error_response("launch_failed", str(error))
+    return {"ok": True, "action": "download", "status": "accepted", "pid": process_id}
+
+
 def run(input_stream: BinaryIO, output_stream: BinaryIO) -> None:
     while True:
         try:
             message = read_message(input_stream)
-            if message is None:
-                return
-            request = validate_download_request(message)
-            process_id = forward_download_request(request)
-            send_message(output_stream, {"ok": True, "action": "download", "pid": process_id})
         except Exception as error:
-            LOGGER.exception("Native messaging request failed")
-            send_message(output_stream, {"ok": False, "error": str(error)})
+            LOGGER.exception("Invalid native messaging frame")
+            send_message(output_stream, error_response("invalid_message", str(error)))
+            return
+        if message is None:
+            return
+        send_message(output_stream, handle_message(message))
 
 
 def main() -> None:

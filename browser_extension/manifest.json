@@ -1,11 +1,18 @@
 {
   "manifest_version": 3,
   "name": "AnyFileDownloader Bridge",
-  "version": "0.1.0",
-  "description": "Send a selected URL to the AnyFileDownloader desktop application.",
+  "version": "0.2.0",
+  "description": "Detect downloadable media and send a selected URL to AnyFileDownloader.",
   "permissions": [
     "activeTab",
-    "nativeMessaging"
+    "nativeMessaging",
+    "storage",
+    "tabs",
+    "webNavigation",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
@@ -13,5 +20,12 @@
   "action": {
     "default_title": "Send to AnyFileDownloader",
     "default_popup": "popup.html"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["media_detection.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
 }

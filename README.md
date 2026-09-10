@@ -1,97 +1,178 @@
-# Any File Downloader v3.1 — Recovery Stage 1
+# AnyFileDownloader v3.1-recovery.2
 
-AnyFileDownloader is a cross-platform desktop downloader built with Python and CustomTkinter. This branch preserves the v3.1 Hologram Edition interface while rebuilding the lost browser-to-desktop architecture incrementally.
+AnyFileDownloader is in recovery/development. The original v3.1 application remains on `main`; ongoing reconstruction is on `recovery-linux`.
+
+The project provides a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. It is intended to remain portable across Windows and Linux, while the current registration tooling targets Fedora/Linux with Google Chrome.
+
+## Architecture
+
+```text
+Google Chrome
+    -> passive extension detection (webRequest / performance / media elements)
+    -> user selects Download in the extension popup
+    -> Chrome Native Messaging
+    -> native_host.py
+    -> downloader.py
+    -> direct transfer or yt-dlp
+    -> FFmpeg when merging or conversion is required
+    -> final file
+```
+
+Passive detection never opens the desktop application. The native host is contacted only for a popup connection check or after the user presses a Download button. Only a download action launches the desktop application.
 
 ## Current features
 
-- Dark CustomTkinter interface with an animated throughput HUD.
-- Direct, chunked downloads for supported document and archive URLs.
-- Safe `.part` files and duplicate-aware final filenames for direct downloads.
-- Media extraction through yt-dlp.
-- 1080p, 720p, and 480p MP4 selections when FFmpeg is available.
-- MP3 extraction when FFmpeg is available.
-- Parallel and sequential multi-URL queues.
-- Optional playlist downloads.
 - Persistent download directory, quality, playlist, queue, and sort settings.
-- A Manifest V3 Chrome extension foundation and native-messaging bridge.
+- Safe cross-platform filenames and duplicate numbering.
+- Direct downloads through temporary `.part` files with safe finalization.
+- yt-dlp extraction with meaningful failure reporting.
+- Explicit FFmpeg requirements for MP4 merging and MP3 conversion.
+- Per-tab browser media candidates with fragment-aware deduplication.
+- Signed query parameters are retained.
+- Candidate state is cleared on main-frame navigation and tab closure.
+- Structured native-host errors for invalid requests and launch failures.
 
-## Recovery architecture
+## Media detection
 
-```text
-Chrome extension
-    -> native_host.py
-    -> downloader.py
-    -> direct HTTP / yt-dlp / HLS through yt-dlp / FFmpeg
-    -> final downloaded file
-```
+The extension passively observes response headers, performance resource entries, and HTML media/source elements. It detects:
 
-The native bridge accepts framed JSON messages containing `action`, `url`, `page_url`, and `title`. Chrome native-host registration is intentionally not included in this recovery stage, so the extension cannot connect until an OS-specific host manifest is installed in a later stage.
+- HLS: `.m3u8` and common HLS MIME types
+- DASH: `.mpd` and `application/dash+xml`
+- Video: `.mp4`, `.webm`, `.mkv`, `.mov`, `.m4v`, `.ts`, and `video/*`
+- Audio: `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `audio/*`
+
+Images, JavaScript, CSS, and unrelated response types are ignored. Tiny non-media-element audio/video responses are filtered, and transport-stream candidates are capped per tab to reduce segment noise.
+
+Detection is generic. There are no site-specific hacks, request blocking, DRM bypassing, Widevine handling, credential scraping, or cookie extraction.
+
+## Download dispatch
+
+- HLS and DASH candidates are sent to yt-dlp first. No custom manifest or segment parser is included yet.
+- Direct media extensions are attempted with the safe direct downloader first. If that fails and yt-dlp is installed, yt-dlp is used as a fallback.
+- Recognized documents and archives use the same safe direct downloader.
+- Page and extractor URLs are handled by yt-dlp.
+- Browser-provided Referer, Origin, and User-Agent context can be forwarded. Authorization headers, passwords, and cookies are not captured.
+
+An HLS or DASH URL may still fail when a site requires cookies, authorization, short-lived signatures, or other context. Detection does not imply that every stream is independently downloadable.
 
 ## Requirements
 
 - Python 3.9 or newer
 - `customtkinter>=5.2.0`
 - `yt-dlp>=2024.0.0`
-- FFmpeg on `PATH` for audio/video merging and MP3 conversion
+- FFmpeg on `PATH` for merging and MP3 conversion
+- Google Chrome for current extension testing
 
-Install the Python dependencies:
+Install Python dependencies in the environment that Chrome should use to launch the application. A virtual environment is recommended:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Run the desktop application:
+Run the desktop application directly:
 
 ```bash
 python downloader.py
 ```
 
-Run the tests:
+## Install the unpacked Chrome extension
+
+1. Open `chrome://extensions` in Google Chrome.
+2. Enable **Developer mode**.
+3. Select **Load unpacked**.
+4. Choose this repository's `browser_extension` directory.
+5. Copy the extension ID displayed by Chrome. It is a 32-character value needed for native-host registration.
+
+The extension is currently version 0.2.0.
+
+## Register the native host on Fedora/Linux
+
+Activate the Python environment containing the project dependencies first. The installer records that exact Python interpreter in a private per-user launcher.
+
+From the repository root, run:
 
 ```bash
-python -m unittest discover -s tests -v
+./scripts/install_native_host_linux.sh EXTENSION_ID
+```
+
+Replace `EXTENSION_ID` with the value from `chrome://extensions`.
+
+The installer writes only per-user files:
+
+- Chrome manifest: `${XDG_CONFIG_HOME:-~/.config}/google-chrome/NativeMessagingHosts/com.anyfiledownloader.native_host.json`
+- Launcher: `${XDG_DATA_HOME:-~/.local/share}/anyfiledownloader/native_host_launcher.sh`
+
+It does not modify global Chrome configuration. It is safe to rerun when the repository path, Python environment, or extension ID changes.
+
+Completely close and restart Google Chrome after registration.
+
+To unregister:
+
+```bash
+./scripts/uninstall_native_host_linux.sh
+```
+
+The scripts are provided for manual review and execution. They are not run automatically.
+
+## Manual end-to-end test
+
+1. Install the Python requirements in an activated environment.
+2. Load `browser_extension` unpacked in Chrome.
+3. Copy its extension ID and run the Linux registration command above from the same activated environment.
+4. Restart Chrome completely.
+5. Open a normal page containing downloadable audio/video or an HLS/DASH player.
+6. Start playback so the page requests its media resources.
+7. Open the AnyFileDownloader extension popup.
+8. Confirm the popup says **Native host connected**.
+9. Select an HLS, DASH, VIDEO, or AUDIO candidate.
+10. Press **Download selected media**.
+11. Confirm the popup reports **Accepted by desktop bridge**.
+12. Confirm the desktop window opens, contains the selected URL, and begins the requested transfer.
+13. Confirm the final file appears in the configured download directory only after transfer completion.
+
+The manual URL field can test a known `.m3u8`, `.mpd`, or direct media URL when automatic detection is not convenient.
+
+## Development tests
+
+Run Python tests:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+```
+
+Run browser-classification tests when Node.js is available:
+
+```bash
+node tests/test_media_detection.js
+```
+
+Validate shell scripts and the extension manifest:
+
+```bash
+bash -n scripts/install_native_host_linux.sh scripts/uninstall_native_host_linux.sh
+python3 -m json.tool browser_extension/manifest.json
 ```
 
 ## Settings locations
-
-Settings are stored in a per-user JSON file:
 
 - Windows: `%APPDATA%\AnyFileDownloader\settings.json`
 - Linux: `$XDG_CONFIG_HOME/anyfiledownloader/settings.json`, or `~/.config/anyfiledownloader/settings.json`
 - macOS: `~/Library/Application Support/AnyFileDownloader/settings.json`
 
-Set `ANYFILEDOWNLOADER_CONFIG_DIR` to override the directory, which is useful for testing or portable development environments.
+Set `ANYFILEDOWNLOADER_CONFIG_DIR` to override the settings directory.
 
-## Native messaging protocol
+## Current limitations
 
-Each message is UTF-8 JSON prefixed by its length as an unsigned 4-byte little-endian integer. Example request:
+- No OS-level Windows native-host registration yet.
+- No single-instance desktop forwarding; each accepted request can open a new GUI window.
+- No custom HLS or DASH parser.
+- No cookie forwarding or authenticated-session integration.
+- No bundled FFmpeg.
+- No final installer or native-host executable package.
+- Parallel downloads still share one aggregate-style progress display.
+- Browser detection can contain false positives or miss opaque/blob-based media.
+- DRM-protected media is intentionally unsupported.
 
-```json
-{
-  "action": "download",
-  "url": "https://example.com/video",
-  "page_url": "https://example.com/watch",
-  "title": "Example video"
-}
-```
-
-Standard output from `native_host.py` is reserved for framed protocol responses. Diagnostic logging goes to standard error.
-
-The extension currently uses the placeholder native host name `com.anyfiledownloader.native_host`. OS-level Chrome registration scripts and manifests remain future work.
-
-## Packaging
-
-The existing PyInstaller specs still build the desktop application:
-
-```bash
-python -m pip install pyinstaller
-pyinstaller AnyFileDownloader.spec
-```
-
-FFmpeg and the native messaging host are not bundled yet.
-
-## Project status
-
-This is reconstruction stage 1. It does not include aggressive media detection, DRM bypassing, site-specific extraction code, browser host registration, an installer, or bundled FFmpeg.
-
-A license file has not yet been added to the repository.
+This repository does not yet contain a license file.

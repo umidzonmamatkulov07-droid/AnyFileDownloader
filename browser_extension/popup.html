@@ -8,11 +8,25 @@
   </head>
   <body>
     <main>
-      <label for="download-url">URL to download</label>
-      <input id="download-url" type="url" placeholder="https://example.com/media" autofocus>
-      <button id="send-download" type="button">Send to desktop app</button>
-      <p id="status" role="status" aria-live="polite"></p>
+      <header>
+        <strong>Detected media</strong>
+        <span id="native-status" class="status">Checking native host…</span>
+      </header>
+
+      <label for="candidate-list">Media found in this tab</label>
+      <select id="candidate-list" size="6" aria-describedby="candidate-help"></select>
+      <p id="candidate-help" class="hint">Open or play media on the page if this list is empty.</p>
+      <button id="download-selected" type="button">Download selected media</button>
+
+      <section>
+        <label for="manual-url">Manual/test URL</label>
+        <input id="manual-url" type="url" placeholder="https://example.com/media.m3u8">
+        <button id="download-manual" class="secondary" type="button">Send manual URL</button>
+      </section>
+
+      <p id="request-status" class="status" role="status" aria-live="polite"></p>
     </main>
+    <script src="media_detection.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

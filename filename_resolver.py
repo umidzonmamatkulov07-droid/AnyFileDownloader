@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import urllib.parse
+import mimetypes
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -44,6 +45,7 @@ def filename_from_response(
     url: str,
     content_disposition: Optional[str] = None,
     suggested_title: Optional[str] = None,
+    mime_type: Optional[str] = None,
 ) -> str:
     """Prefer a server filename, then URL basename, then a supplied page title."""
     server_name = None
@@ -57,7 +59,13 @@ def filename_from_response(
 
     url_name = Path(urllib.parse.unquote(urllib.parse.urlparse(url).path)).name
     selected = server_name or url_name or suggested_title or "downloaded_file.dat"
-    return sanitize_filename(selected)
+    safe_name = sanitize_filename(selected)
+    if not Path(safe_name).suffix and mime_type:
+        normalized_mime = mime_type.split(";", 1)[0].strip().lower()
+        extension = mimetypes.guess_extension(normalized_mime) or ""
+        if extension:
+            safe_name = sanitize_filename(f"{safe_name}{extension}")
+    return safe_name
 
 
 def unique_path(directory: Union[str, Path], filename: str) -> Path:
