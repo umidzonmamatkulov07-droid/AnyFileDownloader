@@ -11,6 +11,15 @@ class DownloadPolicyTests(unittest.TestCase):
     def test_auto_direct_media_and_documents_use_direct_engine(self):
         self.assertEqual(choose_download_engine("https://cdn.test/movie.mp4").engine, "direct")
         self.assertEqual(choose_download_engine("https://cdn.test/archive.zip").engine, "direct")
+        self.assertEqual(choose_download_engine("https://cdn.test/report.docx").detected_type, "DOCUMENT")
+        self.assertEqual(
+            choose_download_engine("https://cdn.test/download", mime_type="application/vnd.ms-excel").engine,
+            "direct",
+        )
+        self.assertEqual(
+            choose_download_engine("https://cdn.test/report.pdf", detected_type="DIRECT").engine,
+            "direct",
+        )
 
     def test_conversion_and_webpages_use_ytdlp(self):
         self.assertEqual(choose_download_engine("https://cdn.test/movie.mp4", "720p MP4").engine, "yt_dlp")

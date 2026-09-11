@@ -9,23 +9,22 @@
   <body>
     <main>
       <header>
-        <strong>Detected media</strong>
+        <strong>Detected downloads</strong>
         <span id="native-status" class="status">Checking native host…</span>
       </header>
 
-      <label for="candidate-list">Media found in this tab</label>
-      <select id="candidate-list" size="6" aria-describedby="candidate-help"></select>
-      <p id="candidate-help" class="hint">Open or play media on the page if this list is empty.</p>
+      <div class="list-heading">Files and media found in this tab</div>
+      <div id="candidate-list" role="list" aria-describedby="candidate-help"></div>
+      <p id="candidate-help" class="hint">Open content or follow file links on the page if this list is empty.</p>
       <details>
-        <summary>Selected candidate details</summary>
+        <summary>Candidate details</summary>
         <pre id="candidate-debug">No candidate selected.</pre>
       </details>
-      <button id="download-selected" type="button">Download selected media</button>
 
       <section>
-        <label for="manual-url">Manual/test URL</label>
-        <input id="manual-url" type="url" placeholder="https://example.com/media.m3u8">
-        <button id="download-manual" class="secondary" type="button">Send manual URL</button>
+        <label for="manual-url">Manual URL</label>
+        <input id="manual-url" type="url" placeholder="https://example.com/file.pdf">
+        <button id="download-manual" class="secondary" type="button">Download URL</button>
       </section>
 
       <p id="request-status" class="status" role="status" aria-live="polite"></p>

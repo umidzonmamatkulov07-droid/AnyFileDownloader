@@ -2,17 +2,9 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from dataclasses import dataclass
 
-from media_types import classify_media, is_direct_media_url
-
-
-DIRECT_FILE_EXTENSIONS = {
-    ".pdf", ".epub", ".mobi", ".azw3", ".djvu", ".doc", ".docx", ".ppt", ".pptx",
-    ".xls", ".xlsx", ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".iso",
-    ".exe", ".msi", ".apk", ".dmg", ".pkg", ".deb", ".rpm", ".txt", ".csv",
-}
+from media_types import classify_download, is_direct_media_url
 
 
 @dataclass(frozen=True)
@@ -29,8 +21,12 @@ def choose_download_engine(
     mime_type: str = "",
 ) -> DownloadDecision:
     """Return a stable direct/yt-dlp decision without performing I/O."""
-    media_type = (detected_type or classify_media(url, mime_type) or "UNKNOWN").upper()
-    extension = urllib.parse.urlparse(url).path.lower()
+    supplied_type = (detected_type or "").upper()
+    media_type = (
+        supplied_type
+        if supplied_type not in {"", "UNKNOWN", "DIRECT"}
+        else (classify_download(url, mime_type) or supplied_type or "UNKNOWN")
+    )
 
     if media_type in {"HLS", "DASH"}:
         return DownloadDecision("yt_dlp", media_type, media_type.lower())
@@ -38,7 +34,7 @@ def choose_download_engine(
         return DownloadDecision("direct", media_type, "document_mode")
     if selected_quality != "Auto":
         return DownloadDecision("yt_dlp", media_type, "explicit_conversion")
-    if any(extension.endswith(suffix) for suffix in DIRECT_FILE_EXTENSIONS):
+    if media_type in {"DOCUMENT", "ARCHIVE", "FILE"}:
         return DownloadDecision("direct", media_type, "document_or_archive")
     if media_type in {"VIDEO", "AUDIO"} or is_direct_media_url(url):
         return DownloadDecision("direct", media_type, "direct_media")

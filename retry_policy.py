@@ -20,12 +20,14 @@ TRANSIENT_CATEGORIES = {
     "hls_transport",
     "network_error",
     "timeout",
+    "incomplete_download",
 }
 TRANSIENT_MARKERS = (
     "connection aborted",
     "connection reset",
     "connection refused",
     "fragment download failed",
+    "incomplete download",
     "network is unreachable",
     "remote end closed connection",
     "temporarily unavailable",

@@ -6,6 +6,25 @@ assert.equal(detection.classifyMedia("https://cdn.example/manifest.mpd"), "DASH"
 assert.equal(detection.classifyMedia("https://cdn.example/video", "video/mp4"), "VIDEO");
 assert.equal(detection.classifyMedia("https://cdn.example/audio.m4a"), "AUDIO");
 assert.equal(detection.classifyMedia("https://cdn.example/app.js", "application/javascript"), null);
+assert.equal(detection.classifyDownload("https://cdn.example/report.pdf"), "DOCUMENT");
+assert.equal(detection.classifyDownload("https://cdn.example/report.docx"), "DOCUMENT");
+assert.equal(detection.classifyDownload("https://cdn.example/budget.xlsx"), "DOCUMENT");
+assert.equal(detection.classifyDownload("https://cdn.example/archive.zip"), "ARCHIVE");
+assert.equal(detection.classifyDownload("https://cdn.example/package.apk"), "FILE");
+assert.equal(detection.classifyDownload("https://cdn.example/misleading.exe", "application/pdf"), "DOCUMENT");
+assert.equal(
+  detection.classifyDownload(
+    "https://cdn.example/download",
+    "application/octet-stream",
+    "attachment; filename*=UTF-8''Report%20One.pdf"
+  ),
+  "DOCUMENT"
+);
+assert.equal(
+  detection.filenameFromContentDisposition("attachment; filename*=UTF-8''Report%20One.pdf"),
+  "Report One.pdf"
+);
+assert.equal(detection.classifyDownload("https://cdn.example/download", "", "attachment"), "FILE");
 
 const first = {
   url: "https://cdn.example/video.mp4?signature=one#fragment",
@@ -32,12 +51,13 @@ assert.equal(candidates.length, 2);
 assert.match(candidates[0].url, /signature=one$/);
 
 const ranked = detection.rankCandidates([
+  { url: "https://files.example/report.pdf", detected_type: "DOCUMENT", first_seen: 1 },
   { url: "https://audio.example/song.mp3", detected_type: "AUDIO", first_seen: 1 },
   { url: "https://video.example/movie.mp4", detected_type: "VIDEO", content_length: 20_000_000, first_seen: 1 },
   { url: "https://hls.example/media.m3u8", detected_type: "HLS", first_seen: 1 },
   { url: "https://dash.example/manifest.mpd", detected_type: "DASH", first_seen: 1 },
   { url: "https://hls.example/master.m3u8", detected_type: "HLS", first_seen: 1 }
 ]);
-assert.deepEqual(ranked.map((item) => item.detected_type), ["HLS", "DASH", "VIDEO", "AUDIO", "HLS"]);
+assert.deepEqual(ranked.map((item) => item.detected_type), ["HLS", "DOCUMENT", "DASH", "VIDEO", "AUDIO", "HLS"]);
 
 console.log("media_detection.js tests passed");

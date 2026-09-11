@@ -20,11 +20,15 @@ class DownloadFailure(Exception):
 
 
 def http_failure(status_code: int, reason: str = "") -> DownloadFailure:
+    if status_code == 401:
+        return DownloadFailure("http_unauthorized", "The download server requires authentication (HTTP 401).", reason)
     if status_code == 403:
-        return DownloadFailure("http_forbidden", "The media server refused the request (HTTP 403).", reason)
+        return DownloadFailure("http_forbidden", "The download server refused the request (HTTP 403).", reason)
     if status_code == 404:
-        return DownloadFailure("http_not_found", "The media URL was not found (HTTP 404).", reason)
-    return DownloadFailure("network_error", f"The media server returned HTTP {status_code}.", reason)
+        return DownloadFailure("http_not_found", "The download URL was not found (HTTP 404).", reason)
+    if 400 <= status_code < 500:
+        return DownloadFailure("http_client_error", f"The download server returned HTTP {status_code}.", reason)
+    return DownloadFailure("network_error", f"The download server returned HTTP {status_code}.", reason)
 
 
 def map_exception(error: Exception, default_category: str = "network_error") -> DownloadFailure:

@@ -7,8 +7,11 @@ import re
 import threading
 import urllib.parse
 import mimetypes
+from email.message import Message
 from pathlib import Path
 from typing import Optional, Tuple, Union
+
+from media_types import extension_for_mime
 
 
 _INVALID_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -59,24 +62,44 @@ def filename_from_response(
     suggested_title: Optional[str] = None,
     mime_type: Optional[str] = None,
     media_title: Optional[str] = None,
+    browser_filename: Optional[str] = None,
+    link_text: Optional[str] = None,
 ) -> str:
-    """Resolve a direct-response filename using centralized metadata priority."""
-    server_name = None
-    if content_disposition:
-        encoded_match = re.search(r"filename\*\s*=\s*(?:UTF-8'')?([^;]+)", content_disposition, re.IGNORECASE)
-        regular_match = re.search(r'filename\s*=\s*(?:"([^"]+)"|([^;]+))', content_disposition, re.IGNORECASE)
-        if encoded_match:
-            server_name = encoded_match.group(1).strip().strip('"\'')
-        elif regular_match:
-            server_name = (regular_match.group(1) or regular_match.group(2)).strip().strip('"\'')
-
-    return resolve_filename(
-        url=url,
-        explicit_filename=server_name or "",
-        media_title=media_title or "",
-        page_title=suggested_title or "",
-        mime_type=mime_type or "",
+    """Resolve a direct-response filename using safe response-oriented priority."""
+    server_name = filename_from_content_disposition(content_disposition or "")
+    url_name = Path(urllib.parse.unquote(urllib.parse.urlparse(url).path)).name
+    candidates = (
+        server_name,
+        browser_filename or "",
+        url_name,
+        link_text or "",
+        media_title or "",
+        suggested_title or "",
     )
+    selected = next((value for value in candidates if _meaningful_name(value)), "downloaded_file")
+    safe_name = sanitize_filename(selected)
+    mime_extension = extension_for_mime(mime_type or "")
+    if mime_extension:
+        current_extension = Path(safe_name).suffix.lower()
+        if not current_extension or current_extension != mime_extension:
+            safe_name = sanitize_filename(f"{Path(safe_name).stem}{mime_extension}")
+    return safe_name
+
+
+def filename_from_content_disposition(content_disposition: str) -> str:
+    """Decode RFC 5987/6266 filename parameters without trusting them as paths."""
+    if not content_disposition:
+        return ""
+    message = Message()
+    message["content-disposition"] = content_disposition
+    filename = message.get_filename() or ""
+    if isinstance(filename, tuple):
+        charset, _language, encoded = filename
+        try:
+            filename = urllib.parse.unquote(encoded, encoding=charset or "utf-8", errors="replace")
+        except LookupError:
+            filename = urllib.parse.unquote(encoded, encoding="utf-8", errors="replace")
+    return str(filename)
 
 
 def _meaningful_name(value: str) -> bool:
@@ -88,8 +111,9 @@ def _meaningful_name(value: str) -> bool:
 
 
 def _extension_for_mime(mime_type: str) -> str:
-    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
-    return mimetypes.guess_extension(normalized_mime) or ""
+    return extension_for_mime(mime_type) or mimetypes.guess_extension(
+        (mime_type or "").split(";", 1)[0].strip().lower()
+    ) or ""
 
 
 def resolve_filename(

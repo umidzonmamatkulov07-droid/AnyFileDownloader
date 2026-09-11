@@ -105,7 +105,11 @@ chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId < 0) return;
     const mimeType = responseHeader(details.responseHeaders, "content-type");
-    const detectedType = MediaDetection.classifyMedia(details.url, mimeType);
+    const contentDisposition = responseHeader(details.responseHeaders, "content-disposition");
+    const browserFilename = MediaDetection.filenameFromContentDisposition(contentDisposition);
+    const detectedType = MediaDetection.classifyDownload(
+      details.url, mimeType, contentDisposition, browserFilename
+    );
     if (!detectedType) return;
 
     const contentLength = Number(responseHeader(details.responseHeaders, "content-length"));
@@ -123,6 +127,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       page_url: details.documentUrl || "",
       detected_type: detectedType,
       mime_type: mimeType,
+      browser_filename: browserFilename,
       content_length: Number.isFinite(contentLength) ? contentLength : 0,
       source: "webRequest",
       first_seen: details.timeStamp || Date.now(),
@@ -225,6 +230,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       page_url: candidate.page_url || "",
       title: candidate.page_title || candidate.title || "",
       media_title: candidate.media_title || "",
+      browser_filename: candidate.browser_filename || "",
+      link_text: candidate.link_text || "",
       detected_type: candidate.detected_type || "DIRECT",
       mime_type: candidate.mime_type || "",
       source: candidate.source || "manual",

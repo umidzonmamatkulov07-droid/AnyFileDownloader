@@ -1,5 +1,4 @@
 const candidateList = document.querySelector("#candidate-list");
-const selectedButton = document.querySelector("#download-selected");
 const manualButton = document.querySelector("#download-manual");
 const manualInput = document.querySelector("#manual-url");
 const nativeStatus = document.querySelector("#native-status");
@@ -10,6 +9,15 @@ let activeTab = null;
 let candidates = [];
 
 function readableName(candidate) {
+  if (candidate.browser_filename) {
+    const filename = String(candidate.browser_filename)
+      .replace(/\\/g, "/")
+      .split("/")
+      .pop()
+      .replace(/[\u0000-\u001f]/g, "")
+      .trim();
+    if (filename) return filename.length > 58 ? `${filename.slice(0, 55)}…` : filename;
+  }
   try {
     const parsed = new URL(candidate.url);
     const filename = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || parsed.hostname);
@@ -17,6 +25,24 @@ function readableName(candidate) {
   } catch (_error) {
     return candidate.url.slice(0, 58);
   }
+}
+
+function readableSize(byteCount) {
+  if (!Number.isFinite(byteCount) || byteCount <= 0) return "Size unknown";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = byteCount;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function readableExtension(candidate) {
+  const name = candidate.browser_filename || readableName(candidate);
+  const dotIndex = name.lastIndexOf(".");
+  return dotIndex >= 0 ? name.slice(dotIndex + 1).toUpperCase() : "Unknown extension";
 }
 
 function candidateHost(candidate) {
@@ -27,8 +53,7 @@ function candidateHost(candidate) {
   }
 }
 
-function renderCandidateDebug() {
-  const candidate = candidates[Number(candidateList.value)];
+function renderCandidateDebug(candidate) {
   if (!candidate) {
     candidateDebug.textContent = "No candidate selected.";
     return;
@@ -44,6 +69,8 @@ function renderCandidateDebug() {
     `Source: ${candidate.source || "unknown"}`,
     `Host: ${candidateHost(candidate)}`,
     `MIME: ${candidate.mime_type || "unknown"}`,
+    `Filename: ${candidate.browser_filename || readableName(candidate)}`,
+    `Approximate size: ${readableSize(candidate.content_length)}`,
     `Query parameters: ${hasQuery ? "yes (values hidden)" : "no"}`,
     `Page/Referer context: ${candidate.referer || candidate.page_url ? "available" : "missing"}`,
     `Captured request headers: ${[
@@ -70,19 +97,44 @@ function errorMessage(response) {
 function renderCandidates() {
   candidateList.replaceChildren();
   for (const [index, candidate] of candidates.entries()) {
-    const option = document.createElement("option");
-    option.value = String(index);
-    option.textContent = `${candidate.detected_type} • ${candidateHost(candidate)} • ${readableName(candidate)}`;
-    option.title = `${candidate.detected_type} from ${candidateHost(candidate)}`;
-    candidateList.append(option);
+    const card = document.createElement("article");
+    card.className = "candidate-card";
+    card.setAttribute("role", "listitem");
+
+    const name = document.createElement("div");
+    name.className = "candidate-name";
+    name.textContent = readableName(candidate);
+
+    const metadata = document.createElement("div");
+    metadata.className = "candidate-meta";
+    metadata.textContent = [
+      candidate.detected_type || "FILE",
+      readableExtension(candidate),
+      candidateHost(candidate),
+      readableSize(candidate.content_length)
+    ].join(" • ");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "candidate-download";
+    button.dataset.candidateIndex = String(index);
+    button.textContent = "Download";
+    button.addEventListener("focus", () => renderCandidateDebug(candidate));
+    button.addEventListener("click", () => {
+      renderCandidateDebug(candidate);
+      sendCandidate(candidate);
+    });
+
+    card.append(name, metadata, button);
+    candidateList.append(card);
   }
-  if (candidates.length) candidateList.selectedIndex = 0;
-  selectedButton.disabled = candidates.length === 0;
-  renderCandidateDebug();
+  renderCandidateDebug(candidates[0]);
 }
 
 function setSendingState(isSending, text) {
-  selectedButton.disabled = isSending || candidates.length === 0;
+  candidateList.querySelectorAll(".candidate-download").forEach((button) => {
+    button.disabled = isSending;
+  });
   manualButton.disabled = isSending;
   requestStatus.textContent = text;
 }
@@ -98,13 +150,6 @@ function sendCandidate(candidate) {
   });
 }
 
-selectedButton.addEventListener("click", () => {
-  const selected = candidates[Number(candidateList.value)];
-  if (selected) sendCandidate(selected);
-});
-
-candidateList.addEventListener("change", renderCandidateDebug);
-
 manualButton.addEventListener("click", () => {
   const url = MediaDetection.stripFragment(manualInput.value.trim());
   if (!/^https?:\/\//i.test(url) && !/^ftp:\/\//i.test(url)) {
@@ -115,7 +160,7 @@ manualButton.addEventListener("click", () => {
     url,
     page_url: activeTab?.url || "",
     page_title: activeTab?.title || "",
-    detected_type: MediaDetection.classifyMedia(url) || "DIRECT",
+    detected_type: MediaDetection.classifyDownload(url) || "DIRECT",
     mime_type: "",
     source: "manual",
     first_seen: Date.now(),

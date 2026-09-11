@@ -4,6 +4,8 @@ AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest
 
 The architecture remains Windows-compatible, while current registration and integration testing target Fedora with Google Chrome.
 
+Development work for document and ordinary-file downloads is isolated on `stage5-document-downloads`. The application and extension remain version 3.2.0 until that work is manually approved for release.
+
 ## Architecture
 
 ```text
@@ -50,23 +52,29 @@ On Fedora, Python must include its Tkinter bindings. If `import tkinter` fails, 
 
 ## Media detection and ranking
 
-The extension passively observes response headers, performance entries, and HTML media/source elements. It detects:
+The extension passively observes response headers, performance entries, HTML media/source elements, and recognizable anchor links. It detects:
 
 - HLS: `.m3u8` and common HLS MIME types
 - DASH: `.mpd` and `application/dash+xml`
 - Video: `.mp4`, `.webm`, `.mkv`, `.mov`, `.m4v`, `.ts`, and `video/*`
 - Audio: `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, `.wav`, and `audio/*`
+- Documents: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT, RTF, CSV, ODT/ODS/ODP, EPUB, and MOBI
+- Archives: ZIP, RAR, 7Z, TAR, GZ, and BZ2
+- Other direct files: APK, EXE, MSI, ISO, DMG, DEB, and RPM
+
+Classification uses recognized response MIME types and Content-Disposition filenames before falling back to browser filename metadata and URL extensions. This allows extensionless download endpoints and corrects misleading URL suffixes when the response identifies a known file type. Detection remains passive: a candidate is never downloaded until the user presses its Download button.
 
 Candidate fragments are removed for deduplication, but signed query parameters remain intact. Candidates remain separate across different hosts and URLs. Transport-stream candidates are capped to suppress segment floods.
 
-The popup ranks likely-useful candidates approximately as:
+Each popup candidate shows its filename, classified type, extension, host, and approximate size when known, with a separate Download button. Manual URLs remain supported. The popup ranks likely-useful candidates approximately as:
 
 1. apparent HLS master playlist
-2. DASH manifest
-3. large/direct video
-4. audio
-5. other HLS playlist
-6. uncertain media
+2. documents, archives, and ordinary files
+3. DASH manifest
+4. large/direct video
+5. audio
+6. other HLS playlist
+7. uncertain media
 
 Because Chrome does not expose an HLS response body through passive `webRequest`, master-playlist ranking is initially heuristic. Definitive master/media classification occurs during desktop validation.
 
@@ -97,6 +105,8 @@ Validation redirects are recorded for diagnosis, but the original selected URLâ€
 - Direct audio/video in Auto mode: safe direct downloader, then yt-dlp if direct transfer fails.
 - Explicit resolution or MP3 conversion: yt-dlp and FFmpeg.
 - General page/extractor URLs: yt-dlp.
+
+Direct responses follow redirects and resolve names in this order: Content-Disposition, browser filename metadata, final URL path, safe link/media/page text, and a MIME-aware fallback. Known MIME types correct missing or misleading extensions. Downloads remain private `.part` files until complete; advertised lengths must match, interrupted partials are removed, transient failures receive bounded serial retries, and existing files are never overwritten. A missing Content-Length is allowed and completes normally at clean end-of-stream. Known document/archive/file failures do not fall through to yt-dlp.
 
 HLS validation and transfer failures identified as timeouts, resets, aborted connections, fragment interruptions, or temporary network failures are retried serially up to three whole-operation attempts with short bounded delays. Permanent failures such as HTTP 403/404, invalid manifests, unsupported URLs, and DRM markers are not repeatedly retried. yt-dlp also performs two bounded fragment/network retries inside each attempt.
 

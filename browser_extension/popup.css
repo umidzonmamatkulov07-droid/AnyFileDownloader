@@ -32,14 +32,14 @@ section {
   border-top: 1px solid #1c2541;
 }
 
-label {
+label,
+.list-heading {
   color: #c7f9ff;
   font-size: 0.86rem;
   font-weight: 600;
 }
 
 input,
-select,
 button {
   box-sizing: border-box;
   width: 100%;
@@ -47,15 +47,43 @@ button {
   border-radius: 4px;
 }
 
-input,
-select {
+input {
   padding: 8px;
   background: #050911;
   color: #fff;
 }
 
-select {
-  min-height: 132px;
+#candidate-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.candidate-card {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid #1c2541;
+  border-radius: 4px;
+  background: #050911;
+}
+
+.candidate-name {
+  color: #fff;
+  font-size: 0.86rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.candidate-meta {
+  color: #9ca3af;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.candidate-download {
+  min-height: 32px;
 }
 
 button {
