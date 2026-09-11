@@ -2,13 +2,27 @@ const reportedUrls = new Set();
 
 function reportCandidate(url, source, mimeType = "", metadata = {}) {
   const normalizedUrl = MediaDetection.stripFragment(url);
+  const contentDisposition = metadata.is_attachment ? "attachment" : "";
   const detectedType = MediaDetection.classifyDownload(
     normalizedUrl,
     mimeType,
-    metadata.is_attachment ? "attachment" : "",
+    contentDisposition,
     metadata.browser_filename || ""
   );
-  if (!normalizedUrl || !detectedType || reportedUrls.has(normalizedUrl)) return;
+  const evidenceStrength = MediaDetection.candidateEvidenceStrength({
+    url: normalizedUrl,
+    detected_type: detectedType,
+    mime_type: mimeType,
+    content_disposition: contentDisposition,
+    browser_filename: metadata.browser_filename || "",
+    source
+  });
+  if (
+    !normalizedUrl ||
+    !detectedType ||
+    !evidenceStrength ||
+    reportedUrls.has(normalizedUrl)
+  ) return;
   reportedUrls.add(normalizedUrl);
 
   chrome.runtime.sendMessage({
@@ -22,6 +36,7 @@ function reportCandidate(url, source, mimeType = "", metadata = {}) {
       link_text: metadata.link_text || "",
       detected_type: detectedType,
       mime_type: mimeType,
+      evidence_strength: evidenceStrength,
       source,
       first_seen: Date.now(),
       referer: location.href,

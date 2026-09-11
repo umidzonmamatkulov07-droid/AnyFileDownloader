@@ -21,7 +21,7 @@
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-powerpoint",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "text/plain", "text/rtf", "application/rtf", "text/csv",
+    "text/rtf", "application/rtf", "text/csv",
     "application/vnd.oasis.opendocument.text",
     "application/vnd.oasis.opendocument.spreadsheet",
     "application/vnd.oasis.opendocument.presentation",
@@ -39,6 +39,8 @@
     "application/x-rpm", "application/x-redhat-package-manager"
   ]);
   const NON_DOWNLOAD_MIMES = new Set(["text/html", "application/xhtml+xml", "application/json"]);
+  const AMBIGUOUS_TEXT_EXTENSIONS = new Set([".txt"]);
+  const MIN_AMBIGUOUS_TEXT_BYTES = 8 * 1024;
 
   function stripFragment(url) {
     try {
@@ -90,7 +92,14 @@
     if (DOCUMENT_MIMES.has(normalizedMime)) return "DOCUMENT";
     if (ARCHIVE_MIMES.has(normalizedMime)) return "ARCHIVE";
     if (FILE_MIMES.has(normalizedMime)) return "FILE";
-    if (NON_DOWNLOAD_MIMES.has(normalizedMime)) return null;
+    if (
+      NON_DOWNLOAD_MIMES.has(normalizedMime) ||
+      normalizedMime.startsWith("image/") ||
+      normalizedMime.startsWith("font/") ||
+      normalizedMime === "text/css" ||
+      normalizedMime === "text/javascript" ||
+      normalizedMime === "application/javascript"
+    ) return null;
     if (extension === ".m3u8") return "HLS";
     if (extension === ".mpd") return "DASH";
     if (VIDEO_EXTENSIONS.has(extension)) return "VIDEO";
@@ -100,6 +109,56 @@
     if (FILE_EXTENSIONS.has(extension)) return "FILE";
     if (/\battachment\b/i.test(contentDisposition || "")) return "FILE";
     return null;
+  }
+
+  function candidateEvidenceStrength(candidate) {
+    const detectedType = candidate.detected_type || classifyDownload(
+      candidate.url || "",
+      candidate.mime_type || "",
+      candidate.content_disposition || "",
+      candidate.browser_filename || ""
+    );
+    if (!detectedType) return 0;
+    if (["HLS", "DASH", "VIDEO", "AUDIO"].includes(detectedType)) return 3;
+    if (["ping", "csp_report"].includes(candidate.resource_type || "")) return 0;
+
+    const disposition = candidate.content_disposition || "";
+    const dispositionFilename = filenameFromContentDisposition(disposition);
+    const browserFilename = candidate.browser_filename || "";
+    if (/\battachment\b/i.test(disposition) || dispositionFilename || browserFilename) return 3;
+
+    const normalizedMime = String(candidate.mime_type || "").split(";", 1)[0].trim().toLowerCase();
+    if (
+      DOCUMENT_MIMES.has(normalizedMime) ||
+      ARCHIVE_MIMES.has(normalizedMime) ||
+      FILE_MIMES.has(normalizedMime)
+    ) return 3;
+
+    const extension = extensionForName(browserFilename) || extensionForUrl(candidate.url || "");
+    if (!AMBIGUOUS_TEXT_EXTENSIONS.has(extension)) {
+      if (
+        DOCUMENT_EXTENSIONS.has(extension) ||
+        ARCHIVE_EXTENSIONS.has(extension) ||
+        FILE_EXTENSIONS.has(extension)
+      ) return 3;
+      return detectedType === "FILE" ? 1 : 0;
+    }
+
+    if (candidate.source === "anchor_link") return 2;
+    const method = String(candidate.request_method || "GET").toUpperCase();
+    const resourceType = candidate.resource_type || "";
+    const contentLength = Number(candidate.content_length) || 0;
+    if (
+      candidate.source === "webRequest" &&
+      ["GET", "HEAD"].includes(method) &&
+      ["main_frame", "sub_frame"].includes(resourceType) &&
+      contentLength >= MIN_AMBIGUOUS_TEXT_BYTES
+    ) return 1;
+    return 0;
+  }
+
+  function shouldIncludeCandidate(candidate) {
+    return candidateEvidenceStrength(candidate) > 0;
   }
 
   const classifyMedia = classifyDownload;
@@ -126,6 +185,9 @@
       source: candidate.source || "webRequest",
       first_seen: Number.isFinite(candidate.first_seen) ? candidate.first_seen : Date.now(),
       content_length: Number.isFinite(candidate.content_length) ? candidate.content_length : 0,
+      evidence_strength: Number.isFinite(candidate.evidence_strength)
+        ? candidate.evidence_strength
+        : candidateEvidenceStrength(candidate),
       hls_kind: candidate.hls_kind || "",
       referer: candidate.referer || candidate.page_url || "",
       origin: candidate.origin || "",
@@ -163,9 +225,12 @@
     const hlsKind = candidate.hls_kind || "";
     const looksLikeMaster = /(?:^|[\/_-])master(?:[._/-]|$)/i.test(candidate.url || "");
     if (type === "HLS" && (hlsKind === "hls_master" || looksLikeMaster)) return 10;
-    if (type === "DOCUMENT") return 15;
-    if (type === "ARCHIVE") return 16;
-    if (type === "FILE") return 17;
+    const evidenceStrength = Number.isFinite(candidate.evidence_strength)
+      ? candidate.evidence_strength
+      : candidateEvidenceStrength(candidate);
+    if (type === "DOCUMENT") return evidenceStrength >= 3 ? 15 : evidenceStrength === 2 ? 18 : 55;
+    if (type === "ARCHIVE") return evidenceStrength >= 3 ? 16 : 56;
+    if (type === "FILE") return evidenceStrength >= 3 ? 17 : 57;
     if (type === "DASH") return 20;
     if (type === "VIDEO") return candidate.content_length >= 10 * 1024 * 1024 ? 25 : 30;
     if (type === "AUDIO") return 40;
@@ -189,6 +254,7 @@
 
   const api = {
     candidateRank,
+    candidateEvidenceStrength,
     classifyDownload,
     classifyMedia,
     deduplicateCandidates,
@@ -197,6 +263,7 @@
     normalizeCandidate,
     rankCandidates,
     resolveCandidateTabId,
+    shouldIncludeCandidate,
     stripFragment
   };
   globalObject.MediaDetection = api;

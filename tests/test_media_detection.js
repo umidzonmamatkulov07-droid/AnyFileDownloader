@@ -25,6 +25,55 @@ assert.equal(
   "Report One.pdf"
 );
 assert.equal(detection.classifyDownload("https://cdn.example/download", "", "attachment"), "FILE");
+assert.equal(detection.classifyDownload("https://metrics.example/collect", "text/plain"), null);
+assert.equal(detection.classifyDownload("https://metrics.example/tr", "text/plain"), null);
+assert.equal(detection.classifyDownload("https://metrics.example/envelope", "application/json"), null);
+assert.equal(detection.classifyDownload("https://metrics.example/f.txt", "image/gif"), null);
+assert.equal(detection.classifyDownload("https://metrics.example/collect", "application/octet-stream"), null);
+assert.equal(detection.shouldIncludeCandidate({
+  url: "https://metrics.example/f.txt",
+  mime_type: "text/plain",
+  content_length: 42,
+  request_method: "POST",
+  resource_type: "xmlhttprequest",
+  source: "webRequest"
+}), false);
+assert.equal(detection.shouldIncludeCandidate({
+  url: "https://metrics.example/collect.pdf",
+  mime_type: "application/pdf",
+  content_disposition: "attachment; filename=collect.pdf",
+  request_method: "POST",
+  resource_type: "ping",
+  source: "webRequest"
+}), false);
+assert.equal(detection.shouldIncludeCandidate({
+  url: "https://metrics.example/f.txt",
+  mime_type: "text/plain",
+  content_length: 20_000,
+  request_method: "GET",
+  resource_type: "xmlhttprequest",
+  source: "webRequest"
+}), false);
+assert.equal(detection.shouldIncludeCandidate({
+  url: "https://files.example/readme.txt",
+  source: "anchor_link"
+}), true);
+assert.equal(detection.shouldIncludeCandidate({
+  url: "https://files.example/download",
+  mime_type: "application/pdf",
+  source: "webRequest"
+}), true);
+assert.equal(detection.shouldIncludeCandidate({
+  url: "https://files.example/download",
+  mime_type: "application/octet-stream",
+  content_disposition: "attachment; filename=report.pdf",
+  source: "webRequest"
+}), true);
+assert.equal(detection.shouldIncludeCandidate({
+  url: "https://files.example/download",
+  mime_type: "application/octet-stream",
+  source: "webRequest"
+}), false);
 assert.equal(detection.resolveCandidateTabId(12, 7), 12);
 assert.equal(detection.resolveCandidateTabId(-1, 7), 7);
 assert.equal(detection.resolveCandidateTabId(-1, undefined), -1);
@@ -54,6 +103,7 @@ assert.equal(candidates.length, 2);
 assert.match(candidates[0].url, /signature=one$/);
 
 const ranked = detection.rankCandidates([
+  { url: "https://files.example/unknown", detected_type: "FILE", evidence_strength: 1, first_seen: 1 },
   { url: "https://files.example/report.pdf", detected_type: "DOCUMENT", first_seen: 1 },
   { url: "https://audio.example/song.mp3", detected_type: "AUDIO", first_seen: 1 },
   { url: "https://video.example/movie.mp4", detected_type: "VIDEO", content_length: 20_000_000, first_seen: 1 },
@@ -61,6 +111,12 @@ const ranked = detection.rankCandidates([
   { url: "https://dash.example/manifest.mpd", detected_type: "DASH", first_seen: 1 },
   { url: "https://hls.example/master.m3u8", detected_type: "HLS", first_seen: 1 }
 ]);
-assert.deepEqual(ranked.map((item) => item.detected_type), ["HLS", "DOCUMENT", "DASH", "VIDEO", "AUDIO", "HLS"]);
+assert.deepEqual(
+  ranked.map((item) => `${item.detected_type}:${item.url.split("/").at(-1)}`),
+  [
+    "HLS:master.m3u8", "DOCUMENT:report.pdf", "DASH:manifest.mpd", "VIDEO:movie.mp4",
+    "AUDIO:song.mp3", "HLS:media.m3u8", "FILE:unknown"
+  ]
+);
 
 console.log("media_detection.js tests passed");

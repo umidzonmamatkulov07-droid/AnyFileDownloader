@@ -116,6 +116,18 @@ chrome.webRequest.onHeadersReceived.addListener(
     if (!detectedType) return;
 
     const contentLength = Number(responseHeader(details.responseHeaders, "content-length"));
+    const evidenceStrength = MediaDetection.candidateEvidenceStrength({
+      url: details.url,
+      detected_type: detectedType,
+      mime_type: mimeType,
+      content_disposition: contentDisposition,
+      browser_filename: browserFilename,
+      content_length: Number.isFinite(contentLength) ? contentLength : 0,
+      request_method: details.method || "",
+      resource_type: details.type || "",
+      source: "webRequest"
+    });
+    if (!evidenceStrength) return;
     const isTinyDirectResource =
       Number.isFinite(contentLength) &&
       contentLength > 0 &&
@@ -131,6 +143,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       mime_type: mimeType,
       browser_filename: browserFilename,
       content_length: Number.isFinite(contentLength) ? contentLength : 0,
+      evidence_strength: evidenceStrength,
       source: "webRequest",
       first_seen: details.timeStamp || Date.now(),
       referer: capturedContext.referer || details.documentUrl || details.initiator || "",
