@@ -20,6 +20,11 @@ class DownloadErrorTests(unittest.TestCase):
         self.assertEqual(failure.category, "invalid_hls_manifest")
         self.assertIn("HTML", failure.message)
 
+    def test_exception_messages_redact_signed_urls(self):
+        failure = map_exception(OSError("failed https://cdn.test/master.m3u8?token=secret"))
+        self.assertNotIn("secret", failure.message)
+        self.assertIn("query-redacted", failure.message)
+
 
 if __name__ == "__main__":
     unittest.main()

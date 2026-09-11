@@ -45,7 +45,16 @@ function renderCandidateDebug() {
     `Host: ${candidateHost(candidate)}`,
     `MIME: ${candidate.mime_type || "unknown"}`,
     `Query parameters: ${hasQuery ? "yes (values hidden)" : "no"}`,
-    `Page/Referer context: ${candidate.referer || candidate.page_url ? "available" : "missing"}`
+    `Page/Referer context: ${candidate.referer || candidate.page_url ? "available" : "missing"}`,
+    `Captured request headers: ${[
+      candidate.accept && "Accept",
+      candidate.accept_language && "Accept-Language",
+      candidate.referer && "Referer",
+      candidate.origin && "Origin",
+      candidate.user_agent && "User-Agent",
+      candidate.range && "Range",
+      candidate.sec_fetch_site && "Sec-Fetch-*"
+    ].filter(Boolean).join(", ") || "none"}`
   ].join("\n");
 }
 

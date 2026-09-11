@@ -18,6 +18,18 @@ _WINDOWS_RESERVED = {
     *(f"LPT{number}" for number in range(1, 10)),
 }
 _DESTINATION_LOCK = threading.Lock()
+_GENERIC_STEMS = {
+    "download",
+    "file",
+    "hls",
+    "index",
+    "manifest",
+    "master",
+    "media",
+    "playlist",
+    "stream",
+    "video",
+}
 
 
 def sanitize_filename(filename: str, fallback: str = "downloaded_file", max_length: int = 240) -> str:
@@ -46,8 +58,9 @@ def filename_from_response(
     content_disposition: Optional[str] = None,
     suggested_title: Optional[str] = None,
     mime_type: Optional[str] = None,
+    media_title: Optional[str] = None,
 ) -> str:
-    """Prefer a server filename, then URL basename, then a supplied page title."""
+    """Resolve a direct-response filename using centralized metadata priority."""
     server_name = None
     if content_disposition:
         encoded_match = re.search(r"filename\*\s*=\s*(?:UTF-8'')?([^;]+)", content_disposition, re.IGNORECASE)
@@ -57,14 +70,58 @@ def filename_from_response(
         elif regular_match:
             server_name = (regular_match.group(1) or regular_match.group(2)).strip().strip('"\'')
 
+    return resolve_filename(
+        url=url,
+        explicit_filename=server_name or "",
+        media_title=media_title or "",
+        page_title=suggested_title or "",
+        mime_type=mime_type or "",
+    )
+
+
+def _meaningful_name(value: str) -> bool:
+    safe_value = sanitize_filename(value or "", fallback="")
+    if not safe_value:
+        return False
+    stem = Path(safe_value).stem.strip(" ._-").lower()
+    return bool(stem) and stem not in _GENERIC_STEMS
+
+
+def _extension_for_mime(mime_type: str) -> str:
+    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    return mimetypes.guess_extension(normalized_mime) or ""
+
+
+def resolve_filename(
+    url: str,
+    explicit_filename: str = "",
+    media_title: str = "",
+    page_title: str = "",
+    extractor_title: str = "",
+    fallback_title: str = "",
+    mime_type: str = "",
+    extension: str = "",
+) -> str:
+    """Choose the best meaningful safe name and apply the known final extension."""
     url_name = Path(urllib.parse.unquote(urllib.parse.urlparse(url).path)).name
-    selected = server_name or url_name or suggested_title or "downloaded_file.dat"
+    candidates = (
+        explicit_filename,
+        media_title,
+        page_title,
+        extractor_title,
+        url_name,
+        fallback_title,
+    )
+    selected = next((value for value in candidates if _meaningful_name(value)), "downloaded_file")
     safe_name = sanitize_filename(selected)
-    if not Path(safe_name).suffix and mime_type:
-        normalized_mime = mime_type.split(";", 1)[0].strip().lower()
-        extension = mimetypes.guess_extension(normalized_mime) or ""
-        if extension:
-            safe_name = sanitize_filename(f"{safe_name}{extension}")
+
+    desired_extension = extension or _extension_for_mime(mime_type)
+    if desired_extension and not desired_extension.startswith("."):
+        desired_extension = f".{desired_extension}"
+    if desired_extension and not Path(safe_name).suffix:
+        safe_name = sanitize_filename(f"{safe_name}{desired_extension}")
+    elif extension and Path(safe_name).suffix.lower() != desired_extension.lower():
+        safe_name = sanitize_filename(f"{Path(safe_name).stem}{desired_extension}")
     return safe_name
 
 

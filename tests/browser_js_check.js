@@ -25,6 +25,9 @@
     const first = MediaDetection.deduplicateCandidates([], {
       url: "https://cdn.example/movie.mp4?token=one#first",
       detected_type: "VIDEO",
+      media_title: "Episode 4",
+      accept: "*/*",
+      accept_language: "en-US,en;q=0.9",
       first_seen: 1
     });
     const duplicate = MediaDetection.deduplicateCandidates(first, {
@@ -38,6 +41,8 @@
       first_seen: 3
     });
     assert(duplicate.length === 1, "fragment deduplication");
+    assert(duplicate[0].media_title === "Episode 4", "media title preservation");
+    assert(duplicate[0].accept_language === "en-US,en;q=0.9", "Accept-Language preservation");
     assert(signedVariant.length === 2, "signed query preservation");
     const ranked = MediaDetection.rankCandidates([
       { url: "https://audio.example/song.mp3", detected_type: "AUDIO" },

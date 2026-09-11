@@ -6,6 +6,8 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Optional
 
+from diagnostics import redact_diagnostic
+
 
 @dataclass
 class DownloadFailure(Exception):
@@ -31,10 +33,16 @@ def map_exception(error: Exception, default_category: str = "network_error") -> 
     if isinstance(error, urllib.error.HTTPError):
         return http_failure(error.code, str(error.reason))
     if isinstance(error, urllib.error.URLError):
-        return DownloadFailure("network_error", "Could not reach the media server.", str(error.reason))
+        return DownloadFailure("network_error", "Could not reach the media server.", redact_diagnostic(str(error.reason)))
+    if isinstance(error, TimeoutError):
+        return DownloadFailure("timeout", "The media server did not respond before the timeout.")
+    if isinstance(error, ConnectionResetError):
+        return DownloadFailure("connection_reset", "The media connection was reset.")
+    if isinstance(error, ConnectionAbortedError):
+        return DownloadFailure("connection_aborted", "The media connection was interrupted.")
     if isinstance(error, (OSError, IOError)):
-        return DownloadFailure(default_category, str(error) or "An operating-system error occurred.")
-    return DownloadFailure(default_category, str(error) or "The download failed.")
+        return DownloadFailure(default_category, redact_diagnostic(str(error)) or "An operating-system error occurred.")
+    return DownloadFailure(default_category, redact_diagnostic(str(error)) or "The download failed.")
 
 
 def hls_validation_failure(reason: str, status_code: Optional[int] = None) -> DownloadFailure:

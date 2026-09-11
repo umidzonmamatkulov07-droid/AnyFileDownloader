@@ -6,6 +6,7 @@ from filename_resolver import (
     filename_from_response,
     finalize_download,
     reserve_download_path,
+    resolve_filename,
     sanitize_filename,
     unique_path,
 )
@@ -31,11 +32,7 @@ class FilenameResolverTests(unittest.TestCase):
             suggested_title="Recorded session",
             mime_type="video/mp4; charset=binary",
         )
-        self.assertEqual(name, "download.mp4")
-
-    def test_browser_title_cannot_escape_destination(self):
-        name = filename_from_response("https://cdn.example/", suggested_title="../../outside.mp4")
-        self.assertEqual(name, "outside.mp4")
+        self.assertEqual(name, "Recorded session.mp4")
 
     def test_browser_title_cannot_escape_destination(self):
         name = filename_from_response(
@@ -44,6 +41,23 @@ class FilenameResolverTests(unittest.TestCase):
             mime_type="video/mp4",
         )
         self.assertEqual(name, "outside.mp4")
+
+    def test_page_metadata_replaces_generic_hls_name(self):
+        name = resolve_filename(
+            "https://cdn.example/master.m3u8?token=secret",
+            page_title="Series Name - Episode 12",
+            extractor_title="master",
+            extension=".mp4",
+        )
+        self.assertEqual(name, "Series Name - Episode 12.mp4")
+
+    def test_extractor_title_beats_meaningful_url_basename(self):
+        name = resolve_filename(
+            "https://cdn.example/opaque-video.mp4",
+            extractor_title="Recovered Episode 4",
+            extension=".mp4",
+        )
+        self.assertEqual(name, "Recovered Episode 4.mp4")
 
     def test_duplicate_names_get_numbered_suffixes(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

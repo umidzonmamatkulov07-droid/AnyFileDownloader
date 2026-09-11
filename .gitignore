@@ -1,8 +1,13 @@
-﻿# Python bytecode & cache
+﻿# Python bytecode & test caches
 __pycache__/
 *.py[cod]
 *.class
 *.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Virtual Environments
 venv/
@@ -15,6 +20,47 @@ build/
 dist/
 *.spec.bak
 *.exe
+*.AppImage
+
+# Downloader runtime and partial output
+downloads/
+*.part
+*.ytdl
+*.temp
+*.tmp
+*.m3u8
+*.mpd
+*.ts
+*.m4s
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.m4v
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+*.wav
+
+# Runtime diagnostics and local-only configuration
+*.log
+logs/
+diagnostics/
+.env
+.env.*
+!.env.example
+settings.json
+config.local.json
+*.local.json
+
+# Browser profiles and caches
+chrome-profile/
+browser-profile/
+browser-cache/
+User Data/
 
 # IDE / Editor files
 .vscode/

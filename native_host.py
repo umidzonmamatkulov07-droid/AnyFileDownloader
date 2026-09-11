@@ -85,12 +85,19 @@ def validate_download_request(message: dict) -> dict:
     field_limits = {
         "page_url": 8192,
         "title": 512,
+        "media_title": 512,
         "detected_type": 32,
         "mime_type": 256,
         "source": 32,
         "referer": 8192,
         "origin": 2048,
         "user_agent": 1024,
+        "accept": 1024,
+        "accept_language": 512,
+        "range": 256,
+        "sec_fetch_dest": 64,
+        "sec_fetch_mode": 64,
+        "sec_fetch_site": 64,
     }
     for field, maximum_length in field_limits.items():
         value = message.get(field, "")
@@ -101,6 +108,13 @@ def validate_download_request(message: dict) -> dict:
         if len(value) > maximum_length:
             raise ValueError(f"{field} exceeds the size limit")
         request[field] = value
+
+    for field in (
+        "referer", "origin", "user_agent", "accept", "accept_language", "range",
+        "sec_fetch_dest", "sec_fetch_mode", "sec_fetch_site",
+    ):
+        if "\r" in request[field] or "\n" in request[field]:
+            raise ValueError(f"{field} contains an invalid newline")
 
     request["detected_type"] = request["detected_type"].upper() or "UNKNOWN"
     if request["detected_type"] not in DETECTED_TYPES:
@@ -125,12 +139,19 @@ def desktop_command(request: dict) -> list[str]:
     command_line_fields = {
         "page_url": "--page-url",
         "title": "--title",
+        "media_title": "--media-title",
         "detected_type": "--detected-type",
         "mime_type": "--mime-type",
         "source": "--source",
         "referer": "--referer",
         "origin": "--origin",
         "user_agent": "--user-agent",
+        "accept": "--accept",
+        "accept_language": "--accept-language",
+        "range": "--browser-range",
+        "sec_fetch_dest": "--sec-fetch-dest",
+        "sec_fetch_mode": "--sec-fetch-mode",
+        "sec_fetch_site": "--sec-fetch-site",
     }
     for field, option in command_line_fields.items():
         if request[field]:

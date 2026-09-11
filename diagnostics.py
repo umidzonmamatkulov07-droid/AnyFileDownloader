@@ -20,6 +20,7 @@ _SENSITIVE_HEADER_PATTERN = re.compile(
 _SENSITIVE_PARAMETER_PATTERN = re.compile(
     r"(?i)\b(token|signature|auth|key|expires)=([^\s&;]+)"
 )
+_EXTRACTING_URL_PATTERN = re.compile(r"(?im)(\bextracting URL:\s*)\S+")
 _SAFE_FIELD_NAMES = {
     "category",
     "content_type",
@@ -45,8 +46,16 @@ def redact_url(url: str) -> str:
         return "<invalid-url>"
     if not parts.scheme or not parts.netloc:
         return "<invalid-url>"
+    hostname = parts.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    try:
+        port = f":{parts.port}" if parts.port is not None else ""
+    except ValueError:
+        return "<invalid-url>"
+    safe_netloc = f"{hostname}{port}"
     query_marker = "query-redacted" if parts.query else ""
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query_marker, ""))
+    return urlunsplit((parts.scheme, safe_netloc, parts.path, query_marker, ""))
 
 
 def redact_urls_in_text(text: str, limit: int = 2000) -> str:
@@ -54,7 +63,11 @@ def redact_urls_in_text(text: str, limit: int = 2000) -> str:
 
 
 def redact_diagnostic(text: str, limit: int = 2000) -> str:
-    redacted = redact_urls_in_text(text, limit * 2)
+    # yt-dlp may abbreviate a long signed URL in the middle, removing the query
+    # key while retaining part of its value. The operand is not useful enough
+    # to justify retaining in diagnostics; routing is logged separately.
+    redacted = _EXTRACTING_URL_PATTERN.sub(r"\1<redacted-url>", text or "")
+    redacted = redact_urls_in_text(redacted, limit * 2)
     redacted = _SENSITIVE_HEADER_PATTERN.sub(lambda match: f"{match.group(1)}: <redacted>", redacted)
     redacted = _SENSITIVE_PARAMETER_PATTERN.sub(lambda match: f"{match.group(1)}=<redacted>", redacted)
     return redacted[:limit]
@@ -74,6 +87,12 @@ def safe_event_fields(url: str = "", context: Optional[dict] = None, **fields: A
     safe["has_referer"] = bool(context.get("referer") or context.get("page_url"))
     safe["has_origin"] = bool(context.get("origin"))
     safe["has_user_agent"] = bool(context.get("user_agent"))
+    safe["has_accept"] = bool(context.get("accept"))
+    safe["has_accept_language"] = bool(context.get("accept_language"))
+    safe["browser_had_range"] = bool(context.get("range"))
+    safe["browser_had_sec_fetch"] = any(
+        bool(context.get(name)) for name in ("sec_fetch_dest", "sec_fetch_mode", "sec_fetch_site")
+    )
     for name, value in fields.items():
         if name in _SAFE_FIELD_NAMES and value not in (None, ""):
             safe[name] = value

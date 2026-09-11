@@ -1,6 +1,6 @@
 const reportedUrls = new Set();
 
-function reportCandidate(url, source, mimeType = "") {
+function reportCandidate(url, source, mimeType = "", mediaTitle = "") {
   const normalizedUrl = MediaDetection.stripFragment(url);
   const detectedType = MediaDetection.classifyMedia(normalizedUrl, mimeType);
   if (!normalizedUrl || !detectedType || reportedUrls.has(normalizedUrl)) return;
@@ -12,6 +12,7 @@ function reportCandidate(url, source, mimeType = "") {
       url: normalizedUrl,
       page_url: location.href,
       page_title: document.title,
+      media_title: mediaTitle,
       detected_type: detectedType,
       mime_type: mimeType,
       source,
@@ -26,7 +27,8 @@ function reportCandidate(url, source, mimeType = "") {
 function inspectMediaElement(element) {
   if (!(element instanceof HTMLMediaElement) && !(element instanceof HTMLSourceElement)) return;
   const url = element.currentSrc || element.src;
-  if (url) reportCandidate(url, "media_element", element.getAttribute("type") || "");
+  const mediaTitle = element.getAttribute("title") || element.getAttribute("aria-label") || "";
+  if (url) reportCandidate(url, "media_element", element.getAttribute("type") || "", mediaTitle);
   if (element instanceof HTMLMediaElement) {
     element.querySelectorAll("source[src]").forEach(inspectMediaElement);
   }

@@ -10,6 +10,9 @@ assert.equal(detection.classifyMedia("https://cdn.example/app.js", "application/
 const first = {
   url: "https://cdn.example/video.mp4?signature=one#fragment",
   page_url: "https://example.com/watch",
+  media_title: "Episode 4",
+  accept: "*/*",
+  accept_language: "en-US,en;q=0.9",
   detected_type: "VIDEO",
   source: "performance",
   first_seen: 1
@@ -22,6 +25,8 @@ candidates = detection.deduplicateCandidates(candidates, duplicate);
 assert.equal(candidates.length, 1);
 assert.equal(candidates[0].source, "webRequest");
 assert.equal(candidates[0].first_seen, 1);
+assert.equal(candidates[0].media_title, "Episode 4");
+assert.equal(candidates[0].accept_language, "en-US,en;q=0.9");
 candidates = detection.deduplicateCandidates(candidates, differentSignature);
 assert.equal(candidates.length, 2);
 assert.match(candidates[0].url, /signature=one$/);

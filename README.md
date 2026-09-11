@@ -1,8 +1,8 @@
-# AnyFileDownloader v3.1-recovery.3
+# AnyFileDownloader v3.2.0
 
-AnyFileDownloader is in recovery/development. The original v3.1 application remains on `main`; reconstruction work lives on `recovery-linux`.
+AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. Version 3.2.0 is the approved Linux recovery release and the current known-good version on `main`.
 
-The project combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. The architecture remains Windows-compatible, while current registration and integration testing target Fedora with Google Chrome.
+The architecture remains Windows-compatible, while current registration and integration testing target Fedora with Google Chrome.
 
 ## Architecture
 
@@ -14,9 +14,10 @@ Google Chrome
     -> native_host.py
     -> downloader.py
        -> bounded HLS validation when applicable
-       -> direct download or yt-dlp
+       -> deterministic direct download or yt-dlp dispatch
+       -> bounded serial retry for transient HLS transport failures
        -> controlled FFmpeg fallback for validated HLS
-    -> temporary output
+    -> private downloader-owned temporary output
     -> duplicate-safe final file
 ```
 
@@ -85,6 +86,8 @@ Before an HLS candidate reaches yt-dlp, the desktop performs a bounded validatio
 
 Response bodies are never written to diagnostics. Valid playlists served with a nonstandard MIME type remain usable but receive a MIME-mismatch diagnostic.
 
+Validation redirects are recorded for diagnosis, but the original selected URL—including its complete signed query—is passed unchanged to every yt-dlp or FFmpeg attempt. Only Referer, Origin, User-Agent, Accept, and Accept-Language are allowlisted for forwarding. Cookies and Authorization values are neither collected nor forwarded.
+
 ## Dispatch and fallback
 
 - Valid HLS: validation → yt-dlp → FFmpeg fallback if yt-dlp fails and FFmpeg exists.
@@ -94,6 +97,10 @@ Response bodies are never written to diagnostics. Valid playlists served with a 
 - Direct audio/video in Auto mode: safe direct downloader, then yt-dlp if direct transfer fails.
 - Explicit resolution or MP3 conversion: yt-dlp and FFmpeg.
 - General page/extractor URLs: yt-dlp.
+
+HLS validation and transfer failures identified as timeouts, resets, aborted connections, fragment interruptions, or temporary network failures are retried serially up to three whole-operation attempts with short bounded delays. Permanent failures such as HTTP 403/404, invalid manifests, unsupported URLs, and DRM markers are not repeatedly retried. yt-dlp also performs two bounded fragment/network retries inside each attempt.
+
+yt-dlp writes fragments, separate streams, and post-processing output into one downloader-owned temporary directory. After yt-dlp and FFmpeg finish merging/remuxing, only completed files are promoted to duplicate-safe names in the selected destination; the temporary directory and its remaining artifacts are removed.
 
 FFmpeg fallback:
 
@@ -118,6 +125,8 @@ Up to three rotated 1 MB backups are retained. Native-host diagnostics may also 
 
 Logs include classifications, dispatch paths, validation results, yt-dlp/FFmpeg transitions, and success/failure categories. Query values, Authorization/Cookie headers, and sensitive parameter values are redacted.
 
+Filename selection prefers an explicit meaningful server name, media-element metadata, the page title, the extractor title, and then a meaningful URL basename. Generic HLS names such as `master`, `index`, `manifest`, and `playlist` are skipped when better metadata is available. Existing files are never replaced; numbered names such as `name (1).mp4` are generated instead.
+
 ## Install the unpacked extension
 
 1. Open `chrome://extensions` in Google Chrome.
@@ -126,7 +135,7 @@ Logs include classifications, dispatch paths, validation results, yt-dlp/FFmpeg 
 4. Choose this repository's `browser_extension` directory.
 5. Copy the displayed 32-character extension ID.
 
-The extension recovery version is **0.3.0**.
+The extension version is **3.2.0**.
 
 ## Register the native host on Fedora/Linux
 
@@ -184,6 +193,13 @@ node tests/test_media_detection.js
 ```
 
 The browser JavaScript can also be checked with the existing Chrome engine by opening `tests/browser_js_check.html`; successful execution displays `PASS`.
+
+## Release workflow
+
+- Development happens on a development or recovery branch. Checkpoint commits may be created there, but unfinished work is not pushed over the known-good release.
+- Before release, run the complete test suite, shell and JSON validation, `git diff --check`, a repository-wide secret/private-data scan, and cleanup of temporary files. The application must then be tested manually.
+- Only after the owner explicitly approves the tested version is it merged into `main`, tagged with a new application version, and pushed. `main` therefore always represents the latest owner-tested and approved version.
+- Previous commits and release tags remain available for rollback; release history must not be rewritten.
 
 ## Troubleshooting
 

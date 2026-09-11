@@ -4,6 +4,18 @@ const NATIVE_HOST_NAME = "com.anyfiledownloader.native_host";
 const MAX_TRANSPORT_STREAM_CANDIDATES_PER_TAB = 10;
 const MIN_DIRECT_RESOURCE_BYTES = 64 * 1024;
 const updateChains = new Map();
+const requestContexts = new Map();
+const SAFE_REQUEST_HEADERS = new Map([
+  ["accept", "accept"],
+  ["accept-language", "accept_language"],
+  ["origin", "origin"],
+  ["range", "range"],
+  ["referer", "referer"],
+  ["sec-fetch-dest", "sec_fetch_dest"],
+  ["sec-fetch-mode", "sec_fetch_mode"],
+  ["sec-fetch-site", "sec_fetch_site"],
+  ["user-agent", "user_agent"]
+]);
 
 function storageKey(tabId) {
   return `mediaCandidates:${tabId}`;
@@ -74,6 +86,21 @@ function responseHeader(headers, name) {
   return match?.value || "";
 }
 
+function captureSafeRequestHeaders(details) {
+  const context = {};
+  for (const header of details.requestHeaders || []) {
+    const field = SAFE_REQUEST_HEADERS.get(header.name.toLowerCase());
+    if (field && typeof header.value === "string") context[field] = header.value;
+  }
+  requestContexts.set(details.requestId, context);
+}
+
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  captureSafeRequestHeaders,
+  { urls: ["<all_urls>"] },
+  ["requestHeaders", "extraHeaders"]
+);
+
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (details.tabId < 0) return;
@@ -90,6 +117,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       details.type !== "media";
     if (isTinyDirectResource) return;
 
+    const capturedContext = requestContexts.get(details.requestId) || {};
     queueCandidate(details.tabId, {
       url: details.url,
       page_url: details.documentUrl || "",
@@ -98,13 +126,28 @@ chrome.webRequest.onHeadersReceived.addListener(
       content_length: Number.isFinite(contentLength) ? contentLength : 0,
       source: "webRequest",
       first_seen: details.timeStamp || Date.now(),
-      referer: details.documentUrl || details.initiator || "",
-      origin: details.initiator || "",
-      user_agent: navigator.userAgent
+      referer: capturedContext.referer || details.documentUrl || details.initiator || "",
+      origin: capturedContext.origin || details.initiator || "",
+      user_agent: capturedContext.user_agent || navigator.userAgent,
+      accept: capturedContext.accept || "",
+      accept_language: capturedContext.accept_language || "",
+      range: capturedContext.range || "",
+      sec_fetch_dest: capturedContext.sec_fetch_dest || "",
+      sec_fetch_mode: capturedContext.sec_fetch_mode || "",
+      sec_fetch_site: capturedContext.sec_fetch_site || ""
     });
   },
   { urls: ["<all_urls>"] },
   ["responseHeaders"]
+);
+
+chrome.webRequest.onCompleted.addListener(
+  (details) => requestContexts.delete(details.requestId),
+  { urls: ["<all_urls>"] }
+);
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => requestContexts.delete(details.requestId),
+  { urls: ["<all_urls>"] }
 );
 
 chrome.webNavigation.onCommitted.addListener((details) => {
@@ -181,12 +224,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       url: candidate.url || "",
       page_url: candidate.page_url || "",
       title: candidate.page_title || candidate.title || "",
+      media_title: candidate.media_title || "",
       detected_type: candidate.detected_type || "DIRECT",
       mime_type: candidate.mime_type || "",
       source: candidate.source || "manual",
       referer: candidate.referer || candidate.page_url || "",
       origin: candidate.origin || "",
-      user_agent: candidate.user_agent || navigator.userAgent
+      user_agent: candidate.user_agent || navigator.userAgent,
+      accept: candidate.accept || "",
+      accept_language: candidate.accept_language || "",
+      range: candidate.range || "",
+      sec_fetch_dest: candidate.sec_fetch_dest || "",
+      sec_fetch_mode: candidate.sec_fetch_mode || "",
+      sec_fetch_site: candidate.sec_fetch_site || ""
     }, sendResponse);
     return true;
   }

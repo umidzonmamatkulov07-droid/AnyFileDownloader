@@ -113,6 +113,8 @@ class HLSValidationTests(unittest.TestCase):
             "referer": "https://example.com/watch",
             "origin": "https://example.com",
             "user_agent": "Browser Test",
+            "accept": "*/*",
+            "accept_language": "en-US,en;q=0.9",
             "Authorization": "Bearer should-not-be-forwarded",
             "Cookie": "session=should-not-be-forwarded",
         }
@@ -121,6 +123,9 @@ class HLSValidationTests(unittest.TestCase):
         self.assertEqual(request.get_header("Referer"), context["referer"])
         self.assertEqual(request.get_header("Origin"), context["origin"])
         self.assertEqual(request.get_header("User-agent"), context["user_agent"])
+        self.assertEqual(request.get_header("Accept"), context["accept"])
+        self.assertEqual(request.get_header("Accept-language"), context["accept_language"])
+        self.assertIsNone(request.get_header("Range"))
         self.assertIsNone(request.get_header("Authorization"))
         self.assertIsNone(request.get_header("Cookie"))
         self.assertEqual(response.last_read_size, MAX_VALIDATION_BYTES)

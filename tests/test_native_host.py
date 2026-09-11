@@ -45,16 +45,32 @@ class NativeMessageTests(unittest.TestCase):
             "url": "https://cdn.example/master.m3u8?token=abc",
             "page_url": "https://example.com/watch",
             "title": "Example",
+            "media_title": "Episode 9",
             "detected_type": "HLS",
             "mime_type": "application/vnd.apple.mpegurl",
             "source": "webRequest",
             "referer": "https://example.com/watch",
             "origin": "https://example.com",
             "user_agent": "Test browser",
+            "accept": "*/*",
+            "accept_language": "en-US,en;q=0.9",
+            "range": "bytes=0-",
+            "sec_fetch_site": "cross-site",
         })
         self.assertEqual(request["detected_type"], "HLS")
         self.assertEqual(request["source"], "webRequest")
+        self.assertEqual(request["media_title"], "Episode 9")
+        self.assertEqual(request["accept_language"], "en-US,en;q=0.9")
+        self.assertEqual(request["range"], "bytes=0-")
         self.assertIn("token=abc", request["url"])
+
+    def test_rejects_header_newline_injection(self):
+        with self.assertRaisesRegex(ValueError, "invalid newline"):
+            validate_download_request({
+                "action": "download",
+                "url": "https://cdn.example/master.m3u8",
+                "accept": "*/*\r\nCookie: injected",
+            })
 
     def test_development_launch_path_is_absolute_and_not_cwd_dependent(self):
         request = validate_download_request({

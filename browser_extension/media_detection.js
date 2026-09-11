@@ -48,6 +48,7 @@
       url,
       page_url: stripFragment(candidate.page_url || ""),
       page_title: candidate.page_title || "",
+      media_title: candidate.media_title || "",
       tab_id: Number.isInteger(candidate.tab_id) ? candidate.tab_id : -1,
       detected_type: detectedType,
       mime_type: candidate.mime_type || "",
@@ -57,7 +58,13 @@
       hls_kind: candidate.hls_kind || "",
       referer: candidate.referer || candidate.page_url || "",
       origin: candidate.origin || "",
-      user_agent: candidate.user_agent || ""
+      user_agent: candidate.user_agent || "",
+      accept: candidate.accept || "",
+      accept_language: candidate.accept_language || "",
+      range: candidate.range || "",
+      sec_fetch_dest: candidate.sec_fetch_dest || "",
+      sec_fetch_mode: candidate.sec_fetch_mode || "",
+      sec_fetch_site: candidate.sec_fetch_site || ""
     };
   }
 

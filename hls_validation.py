@@ -7,6 +7,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
+from request_headers import media_request_headers
+
 
 MAX_VALIDATION_BYTES = 64 * 1024
 VALIDATION_TIMEOUT_SECONDS = 8
@@ -32,16 +34,8 @@ class HLSValidationResult:
 
 def request_headers(context: Optional[dict] = None) -> Dict[str, str]:
     context = context or {}
-    headers = {
-        "User-Agent": context.get("user_agent") or "Mozilla/5.0 AnyFileDownloader-Recovery",
-        "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, audio/mpegurl, */*",
-        "Range": f"bytes=0-{MAX_VALIDATION_BYTES - 1}",
-    }
-    referer = context.get("referer") or context.get("page_url")
-    if referer:
-        headers["Referer"] = referer
-    if context.get("origin"):
-        headers["Origin"] = context["origin"]
+    headers = media_request_headers(context)
+    headers.setdefault("Accept", "application/vnd.apple.mpegurl, application/x-mpegURL, audio/mpegurl, */*")
     return headers
 
 
