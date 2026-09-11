@@ -181,6 +181,12 @@
     });
   }
 
+  function resolveCandidateTabId(observedTabId, capturedTabId) {
+    if (Number.isInteger(observedTabId) && observedTabId >= 0) return observedTabId;
+    if (Number.isInteger(capturedTabId) && capturedTabId >= 0) return capturedTabId;
+    return -1;
+  }
+
   const api = {
     candidateRank,
     classifyDownload,
@@ -190,6 +196,7 @@
     filenameFromContentDisposition,
     normalizeCandidate,
     rankCandidates,
+    resolveCandidateTabId,
     stripFragment
   };
   globalObject.MediaDetection = api;

@@ -25,6 +25,9 @@ assert.equal(
   "Report One.pdf"
 );
 assert.equal(detection.classifyDownload("https://cdn.example/download", "", "attachment"), "FILE");
+assert.equal(detection.resolveCandidateTabId(12, 7), 12);
+assert.equal(detection.resolveCandidateTabId(-1, 7), 7);
+assert.equal(detection.resolveCandidateTabId(-1, undefined), -1);
 
 const first = {
   url: "https://cdn.example/video.mp4?signature=one#fragment",

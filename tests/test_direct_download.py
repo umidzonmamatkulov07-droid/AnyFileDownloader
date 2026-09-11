@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 from diagnostics import redact_url
@@ -38,6 +39,21 @@ class _DownloadHandler(BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "/final/report")
             self.end_headers()
+        elif path == "/signed-redirect":
+            self.send_response(302)
+            self.send_header("Location", "/temporary-file?signature=fixture-value&expires=9999999999")
+            self.end_headers()
+        elif path == "/temporary-file":
+            self._send_file(
+                PDF_BODY,
+                "application/pdf",
+                "attachment; filename*=UTF-8''Stage%205%20%E2%9C%93.pdf",
+            )
+        elif path == "/expired":
+            self.send_response(403)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"expired")
         elif path == "/final/report":
             self._send_file(PDF_BODY, "application/pdf", 'attachment; filename="redirected.pdf"')
         elif path == "/normal.pdf":
@@ -147,6 +163,24 @@ class DirectDownloadHTTPTests(unittest.TestCase):
             completed = self.download("/redirect", directory)
             self.assertEqual(completed.name, "redirected.pdf")
             self.assertEqual(_DownloadHandler.requested_targets, ["/redirect", "/final/report"])
+
+    def test_signed_redirect_preserves_query_and_unicode_response_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            completed = self.download("/signed-redirect", directory)
+            self.assertEqual(completed.name, "Stage 5 ✓.pdf")
+            self.assertEqual(completed.read_bytes(), PDF_BODY)
+        self.assertEqual(
+            _DownloadHandler.requested_targets,
+            ["/signed-redirect", "/temporary-file?signature=fixture-value&expires=9999999999"],
+        )
+
+    def test_expired_signed_url_is_not_promoted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(HTTPError) as raised:
+                self.download("/expired?signature=expired-fixture", directory)
+            self.assertEqual(raised.exception.code, 403)
+            raised.exception.close()
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_missing_content_length_completes_normally(self):
         with tempfile.TemporaryDirectory() as directory:

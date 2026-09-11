@@ -87,7 +87,8 @@ function responseHeader(headers, name) {
 }
 
 function captureSafeRequestHeaders(details) {
-  const context = {};
+  const context = { ...(requestContexts.get(details.requestId) || {}) };
+  if (Number.isInteger(details.tabId) && details.tabId >= 0) context.tab_id = details.tabId;
   for (const header of details.requestHeaders || []) {
     const field = SAFE_REQUEST_HEADERS.get(header.name.toLowerCase());
     if (field && typeof header.value === "string") context[field] = header.value;
@@ -103,7 +104,9 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
-    if (details.tabId < 0) return;
+    const capturedContext = requestContexts.get(details.requestId) || {};
+    const candidateTabId = MediaDetection.resolveCandidateTabId(details.tabId, capturedContext.tab_id);
+    if (candidateTabId < 0) return;
     const mimeType = responseHeader(details.responseHeaders, "content-type");
     const contentDisposition = responseHeader(details.responseHeaders, "content-disposition");
     const browserFilename = MediaDetection.filenameFromContentDisposition(contentDisposition);
@@ -121,8 +124,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       details.type !== "media";
     if (isTinyDirectResource) return;
 
-    const capturedContext = requestContexts.get(details.requestId) || {};
-    queueCandidate(details.tabId, {
+    queueCandidate(candidateTabId, {
       url: details.url,
       page_url: details.documentUrl || "",
       detected_type: detectedType,
