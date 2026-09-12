@@ -21,7 +21,10 @@ from diagnostics import configure_logging, log_event
 MAX_MESSAGE_SIZE = 16 * 1024 * 1024
 LOGGER = configure_logging("anyfiledownloader.native_host")
 DETECTED_TYPES = {"HLS", "DASH", "VIDEO", "AUDIO", "DOCUMENT", "ARCHIVE", "FILE", "DIRECT", "UNKNOWN"}
-SOURCES = {"webRequest", "performance", "media_element", "anchor_link", "manual"}
+SOURCES = {
+    "webRequest", "chrome_download", "performance", "media_element",
+    "anchor_download", "anchor_link", "manual",
+}
 
 
 def _read_exact(stream: BinaryIO, length: int) -> bytes:

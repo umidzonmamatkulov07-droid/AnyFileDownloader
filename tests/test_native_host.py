@@ -90,6 +90,16 @@ class NativeMessageTests(unittest.TestCase):
         self.assertIn("--browser-filename", command)
         self.assertIn("report.docx", command)
 
+    def test_browser_event_and_download_anchor_sources_are_accepted(self):
+        for source in ("chrome_download", "anchor_download"):
+            request = validate_download_request({
+                "action": "download",
+                "url": "https://files.example/report.pdf",
+                "detected_type": "DOCUMENT",
+                "source": source,
+            })
+            self.assertEqual(request["source"], source)
+
     def test_development_launch_path_is_absolute_and_not_cwd_dependent(self):
         request = validate_download_request({
             "action": "download",

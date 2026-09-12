@@ -52,7 +52,7 @@ On Fedora, Python must include its Tkinter bindings. If `import tkinter` fails, 
 
 ## Media detection and ranking
 
-The extension passively observes response headers, performance entries, HTML media/source elements, and recognizable anchor links. It detects:
+The extension passively observes response headers, redirect chains, Chrome download lifecycle events, performance entries, HTML media/source elements, and recognizable anchor links (including dynamically-created `<a download>` elements). It detects:
 
 - HLS: `.m3u8` and common HLS MIME types
 - DASH: `.mpd` and `application/dash+xml`
@@ -62,11 +62,13 @@ The extension passively observes response headers, performance entries, HTML med
 - Archives: ZIP, RAR, 7Z, TAR, GZ, and BZ2
 - Other direct files: APK, EXE, MSI, ISO, DMG, DEB, and RPM
 
-Classification uses recognized response MIME types and Content-Disposition filenames before falling back to browser filename metadata and URL extensions. This allows extensionless download endpoints and corrects misleading URL suffixes when the response identifies a known file type. Detection remains passive: a candidate is never downloaded until the user presses its Download button.
+Classification uses Chrome download events, recognized response MIME types, and Content-Disposition filenames as high-confidence evidence. A redirect chain ending in a valid downloadable response is medium-confidence evidence. URL extensions and uncorroborated performance/network entries remain low-confidence signals. This allows extensionless download endpoints and corrects misleading URL suffixes when the response identifies a known file type. Detection remains passive: the extension never initiates a browser download, and it launches the desktop downloader only when the user presses a Download button.
 
-Candidate fragments are removed for deduplication, but signed query parameters remain intact. Candidates remain separate across different hosts and URLs. Transport-stream candidates are capped to suppress segment floods.
+Redirect chains retain their original and final safe URLs. Candidate fragments are removed for deduplication, but signed query parameters remain intact. Anchor, redirect-response, and `chrome.downloads` observations of the same transfer merge into one canonical final-URL candidate. Candidates remain separate across different hosts and URLs. Transport-stream candidates are capped to suppress segment floods.
 
-Each popup candidate shows its filename, classified type, extension, host, and approximate size when known, with a separate Download button. Manual URLs remain supported. The popup ranks likely-useful candidates approximately as:
+Chrome download creation and change events record only safe metadata: final/original URLs, basename-only filename, MIME type when available, byte count, reliable tab attribution, and completion or interruption state. Request capture remains explicitly allowlisted; Cookie and Authorization values are never collected or logged. Blob download URLs are recognized as opaque, browser-owned candidates. Their contents are never read, inspected, or reconstructed, and they are not sent to the native host.
+
+Each popup candidate shows its filename, classified type, extension, host, approximate size, and download state when known, with a separate Download button. Browser-owned blob candidates are informational and cannot be resent through the native bridge. Manual URLs remain supported. The popup ranks likely-useful candidates approximately as:
 
 1. apparent HLS master playlist
 2. documents, archives, and ordinary files

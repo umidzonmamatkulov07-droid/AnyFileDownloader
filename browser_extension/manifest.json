@@ -5,6 +5,7 @@
   "description": "Detect downloadable media and send a selected URL to AnyFileDownloader.",
   "permissions": [
     "activeTab",
+    "downloads",
     "nativeMessaging",
     "storage",
     "tabs",

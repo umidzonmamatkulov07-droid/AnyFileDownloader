@@ -71,6 +71,8 @@ function renderCandidateDebug(candidate) {
     `MIME: ${candidate.mime_type || "unknown"}`,
     `Filename: ${candidate.browser_filename || readableName(candidate)}`,
     `Approximate size: ${readableSize(candidate.content_length)}`,
+    `Download state: ${candidate.download_state || "not started"}`,
+    `Redirects: ${Math.max(0, (candidate.redirect_chain || []).length - 1)}`,
     `Query parameters: ${hasQuery ? "yes (values hidden)" : "no"}`,
     `Page/Referer context: ${candidate.referer || candidate.page_url ? "available" : "missing"}`,
     `Captured request headers: ${[
@@ -118,7 +120,8 @@ function renderCandidates() {
     button.type = "button";
     button.className = "candidate-download";
     button.dataset.candidateIndex = String(index);
-    button.textContent = "Download";
+    button.textContent = candidate.is_browser_owned ? "Browser-owned" : "Download";
+    button.disabled = Boolean(candidate.is_browser_owned);
     button.addEventListener("focus", () => renderCandidateDebug(candidate));
     button.addEventListener("click", () => {
       renderCandidateDebug(candidate);
@@ -133,7 +136,8 @@ function renderCandidates() {
 
 function setSendingState(isSending, text) {
   candidateList.querySelectorAll(".candidate-download").forEach((button) => {
-    button.disabled = isSending;
+    const candidate = candidates[Number(button.dataset.candidateIndex)];
+    button.disabled = isSending || Boolean(candidate?.is_browser_owned);
   });
   manualButton.disabled = isSending;
   requestStatus.textContent = text;

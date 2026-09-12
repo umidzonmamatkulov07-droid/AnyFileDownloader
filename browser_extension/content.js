@@ -1,14 +1,16 @@
-const reportedUrls = new Set();
+const reportedCandidates = new Map();
 
 function reportCandidate(url, source, mimeType = "", metadata = {}) {
   const normalizedUrl = MediaDetection.stripFragment(url);
-  const contentDisposition = metadata.is_attachment ? "attachment" : "";
+  // The HTML download attribute is useful evidence, but it is not an HTTP
+  // Content-Disposition header and must not be scored as one.
+  const contentDisposition = "";
   const detectedType = MediaDetection.classifyDownload(
     normalizedUrl,
     mimeType,
     contentDisposition,
     metadata.browser_filename || ""
-  );
+  ) || (source === "anchor_download" ? "FILE" : null);
   const evidenceStrength = MediaDetection.candidateEvidenceStrength({
     url: normalizedUrl,
     detected_type: detectedType,
@@ -20,10 +22,16 @@ function reportCandidate(url, source, mimeType = "", metadata = {}) {
   if (
     !normalizedUrl ||
     !detectedType ||
-    !evidenceStrength ||
-    reportedUrls.has(normalizedUrl)
+    !evidenceStrength
   ) return;
-  reportedUrls.add(normalizedUrl);
+  const reportSignature = [
+    source,
+    metadata.browser_filename || "",
+    mimeType,
+    evidenceStrength
+  ].join("|");
+  if (reportedCandidates.get(normalizedUrl) === reportSignature) return;
+  reportedCandidates.set(normalizedUrl, reportSignature);
 
   chrome.runtime.sendMessage({
     type: "candidate-detected",
@@ -38,6 +46,7 @@ function reportCandidate(url, source, mimeType = "", metadata = {}) {
       mime_type: mimeType,
       evidence_strength: evidenceStrength,
       source,
+      is_browser_owned: MediaDetection.isBlobUrl(normalizedUrl),
       first_seen: Date.now(),
       referer: location.href,
       origin: location.origin,
@@ -58,10 +67,10 @@ function inspectMediaElement(element) {
 
 function inspectAnchor(element) {
   if (!(element instanceof HTMLAnchorElement) || !element.href) return;
-  reportCandidate(element.href, "anchor_link", element.getAttribute("type") || "", {
+  const isDownload = element.hasAttribute("download");
+  reportCandidate(element.href, isDownload ? "anchor_download" : "anchor_link", element.getAttribute("type") || "", {
     browser_filename: element.getAttribute("download") || "",
-    link_text: (element.textContent || element.getAttribute("title") || element.getAttribute("aria-label") || "").trim(),
-    is_attachment: element.hasAttribute("download")
+    link_text: (element.textContent || element.getAttribute("title") || element.getAttribute("aria-label") || "").trim()
   });
 }
 
