@@ -3,7 +3,28 @@
   <head><meta charset="utf-8"><title>Browser JavaScript checks</title></head>
   <body>
     <pre id="result">PENDING</pre>
+    <script>
+      globalThis.browserTestFailure = "";
+      globalThis.addEventListener("error", (event) => {
+        globalThis.browserTestFailure = event.error?.message || event.message || "unknown browser test failure";
+        document.querySelector("#result").textContent = `FAIL: ${globalThis.browserTestFailure}`;
+      });
+      globalThis.browserAssert = {
+        equal(actual, expected, message = "values differ") {
+          if (actual !== expected) throw new Error(`${message}: ${actual} !== ${expected}`);
+        },
+        deepEqual(actual, expected, message = "values differ") {
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+            throw new Error(`${message}: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
+          }
+        },
+        match(actual, pattern, message = "value does not match") {
+          if (!pattern.test(actual)) throw new Error(`${message}: ${actual}`);
+        }
+      };
+    </script>
     <script src="../browser_extension/media_detection.js"></script>
+    <script src="test_media_detection.js"></script>
     <script src="browser_js_check.js"></script>
   </body>
 </html>

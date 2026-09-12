@@ -46,6 +46,8 @@ class NativeMessageTests(unittest.TestCase):
             "page_url": "https://example.com/watch",
             "title": "Example",
             "media_title": "Episode 9",
+            "browser_filename": "episode-nine.mp4",
+            "link_text": "Download episode nine",
             "detected_type": "HLS",
             "mime_type": "application/vnd.apple.mpegurl",
             "source": "webRequest",
@@ -60,6 +62,7 @@ class NativeMessageTests(unittest.TestCase):
         self.assertEqual(request["detected_type"], "HLS")
         self.assertEqual(request["source"], "webRequest")
         self.assertEqual(request["media_title"], "Episode 9")
+        self.assertEqual(request["browser_filename"], "episode-nine.mp4")
         self.assertEqual(request["accept_language"], "en-US,en;q=0.9")
         self.assertEqual(request["range"], "bytes=0-")
         self.assertIn("token=abc", request["url"])
@@ -71,6 +74,31 @@ class NativeMessageTests(unittest.TestCase):
                 "url": "https://cdn.example/master.m3u8",
                 "accept": "*/*\r\nCookie: injected",
             })
+
+    def test_anchor_document_metadata_is_accepted(self):
+        request = validate_download_request({
+            "action": "download",
+            "url": "https://files.example/download?id=7",
+            "detected_type": "DOCUMENT",
+            "source": "anchor_link",
+            "browser_filename": "report.docx",
+            "link_text": "Quarterly report",
+        })
+        self.assertEqual(request["source"], "anchor_link")
+        self.assertEqual(request["detected_type"], "DOCUMENT")
+        command = desktop_command(request)
+        self.assertIn("--browser-filename", command)
+        self.assertIn("report.docx", command)
+
+    def test_browser_event_and_download_anchor_sources_are_accepted(self):
+        for source in ("chrome_download", "anchor_download"):
+            request = validate_download_request({
+                "action": "download",
+                "url": "https://files.example/report.pdf",
+                "detected_type": "DOCUMENT",
+                "source": source,
+            })
+            self.assertEqual(request["source"], source)
 
     def test_development_launch_path_is_absolute_and_not_cwd_dependent(self):
         request = validate_download_request({

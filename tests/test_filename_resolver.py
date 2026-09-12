@@ -26,6 +26,19 @@ class FilenameResolverTests(unittest.TestCase):
         )
         self.assertEqual(name, "A Useful File.pdf")
 
+    def test_browser_filename_precedes_url_and_link_text(self):
+        name = filename_from_response(
+            "https://example.com/url-name.pdf",
+            browser_filename="browser-name.pdf",
+            link_text="link name",
+            mime_type="application/pdf",
+        )
+        self.assertEqual(name, "browser-name.pdf")
+
+    def test_mime_corrects_a_misleading_extension(self):
+        name = filename_from_response("https://example.com/report.exe", mime_type="application/pdf")
+        self.assertEqual(name, "report.pdf")
+
     def test_known_mime_adds_missing_extension(self):
         name = filename_from_response(
             "https://cdn.example/download",

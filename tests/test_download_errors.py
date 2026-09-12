@@ -1,7 +1,7 @@
 import unittest
 import urllib.error
 
-from download_errors import hls_validation_failure, map_exception
+from download_errors import hls_validation_failure, http_failure, map_exception
 
 
 class DownloadErrorTests(unittest.TestCase):
@@ -14,6 +14,9 @@ class DownloadErrorTests(unittest.TestCase):
         finally:
             forbidden.close()
             missing.close()
+        self.assertEqual(http_failure(401).category, "http_unauthorized")
+        self.assertEqual(http_failure(400).category, "http_client_error")
+        self.assertEqual(http_failure(500).category, "network_error")
 
     def test_hls_error_category(self):
         failure = hls_validation_failure("html_response")

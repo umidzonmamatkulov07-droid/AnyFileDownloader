@@ -20,8 +20,11 @@ from diagnostics import configure_logging, log_event
 
 MAX_MESSAGE_SIZE = 16 * 1024 * 1024
 LOGGER = configure_logging("anyfiledownloader.native_host")
-DETECTED_TYPES = {"HLS", "DASH", "VIDEO", "AUDIO", "DIRECT", "UNKNOWN"}
-SOURCES = {"webRequest", "performance", "media_element", "manual"}
+DETECTED_TYPES = {"HLS", "DASH", "VIDEO", "AUDIO", "DOCUMENT", "ARCHIVE", "FILE", "DIRECT", "UNKNOWN"}
+SOURCES = {
+    "webRequest", "chrome_download", "performance", "media_element",
+    "anchor_download", "anchor_link", "manual",
+}
 
 
 def _read_exact(stream: BinaryIO, length: int) -> bytes:
@@ -86,6 +89,8 @@ def validate_download_request(message: dict) -> dict:
         "page_url": 8192,
         "title": 512,
         "media_title": 512,
+        "browser_filename": 512,
+        "link_text": 512,
         "detected_type": 32,
         "mime_type": 256,
         "source": 32,
@@ -140,6 +145,8 @@ def desktop_command(request: dict) -> list[str]:
         "page_url": "--page-url",
         "title": "--title",
         "media_title": "--media-title",
+        "browser_filename": "--browser-filename",
+        "link_text": "--link-text",
         "detected_type": "--detected-type",
         "mime_type": "--mime-type",
         "source": "--source",

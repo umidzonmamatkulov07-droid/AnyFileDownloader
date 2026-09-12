@@ -5,6 +5,11 @@ const MAX_TRANSPORT_STREAM_CANDIDATES_PER_TAB = 10;
 const MIN_DIRECT_RESOURCE_BYTES = 64 * 1024;
 const updateChains = new Map();
 const requestContexts = new Map();
+const redirectChains = new Map();
+const downloadItems = new Map();
+const candidateAttributions = new Map();
+const ATTRIBUTION_MAX_AGE_MS = 10 * 60 * 1000;
+const MAX_ATTRIBUTION_URLS = 500;
 const SAFE_REQUEST_HEADERS = new Map([
   ["accept", "accept"],
   ["accept-language", "accept_language"],
@@ -51,7 +56,7 @@ async function addCandidate(tabId, rawCandidate) {
   const key = storageKey(tabId);
   const stored = await chrome.storage.session.get(key);
   const candidates = Array.isArray(stored[key]) ? stored[key] : [];
-  const isDuplicate = candidates.some((item) => MediaDetection.stripFragment(item.url) === candidate.url);
+  const isDuplicate = candidates.some((item) => MediaDetection.candidatesMatch(item, candidate));
   const isNewTransportStream =
     MediaDetection.extensionForUrl(candidate.url) === ".ts" &&
     !candidates.some((item) => item.url === candidate.url);
@@ -73,6 +78,17 @@ async function addCandidate(tabId, rawCandidate) {
 }
 
 function queueCandidate(tabId, candidate) {
+  if (tabId >= 0 && candidate.source !== "chrome_download") {
+    const now = Date.now();
+    for (const url of MediaDetection.candidateIdentityUrls(candidate)) {
+      const tabs = candidateAttributions.get(url) || new Map();
+      tabs.set(tabId, now);
+      candidateAttributions.set(url, tabs);
+    }
+    while (candidateAttributions.size > MAX_ATTRIBUTION_URLS) {
+      candidateAttributions.delete(candidateAttributions.keys().next().value);
+    }
+  }
   return queueTabOperation(tabId, () => addCandidate(tabId, candidate));
 }
 
@@ -87,12 +103,16 @@ function responseHeader(headers, name) {
 }
 
 function captureSafeRequestHeaders(details) {
-  const context = {};
+  const context = { ...(requestContexts.get(details.requestId) || {}) };
+  if (Number.isInteger(details.tabId) && details.tabId >= 0) context.tab_id = details.tabId;
   for (const header of details.requestHeaders || []) {
     const field = SAFE_REQUEST_HEADERS.get(header.name.toLowerCase());
     if (field && typeof header.value === "string") context[field] = header.value;
   }
   requestContexts.set(details.requestId, context);
+  if (!redirectChains.has(details.requestId)) {
+    redirectChains.set(details.requestId, [MediaDetection.stripFragment(details.url)].filter(Boolean));
+  }
 }
 
 chrome.webRequest.onBeforeSendHeaders.addListener(
@@ -101,14 +121,49 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
   ["requestHeaders", "extraHeaders"]
 );
 
+chrome.webRequest.onBeforeRedirect.addListener(
+  (details) => {
+    const chain = redirectChains.get(details.requestId) || [];
+    for (const url of [details.url, details.redirectUrl]) {
+      const safeUrl = MediaDetection.stripFragment(url || "");
+      if (safeUrl && chain.at(-1) !== safeUrl) chain.push(safeUrl);
+    }
+    redirectChains.set(details.requestId, chain);
+  },
+  { urls: ["<all_urls>"] }
+);
+
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
-    if (details.tabId < 0) return;
+    if (details.statusCode >= 300 && details.statusCode < 400) return;
+    const capturedContext = requestContexts.get(details.requestId) || {};
+    const candidateTabId = MediaDetection.resolveCandidateTabId(details.tabId, capturedContext.tab_id);
+    if (candidateTabId < 0) return;
     const mimeType = responseHeader(details.responseHeaders, "content-type");
-    const detectedType = MediaDetection.classifyMedia(details.url, mimeType);
+    const contentDisposition = responseHeader(details.responseHeaders, "content-disposition");
+    const browserFilename = MediaDetection.filenameFromContentDisposition(contentDisposition);
+    const redirectChain = redirectChains.get(details.requestId) || [details.url];
+    const finalUrl = MediaDetection.stripFragment(details.url);
+    if (finalUrl && redirectChain.at(-1) !== finalUrl) redirectChain.push(finalUrl);
+    const detectedType = MediaDetection.classifyDownload(
+      details.url, mimeType, contentDisposition, browserFilename
+    );
     if (!detectedType) return;
 
     const contentLength = Number(responseHeader(details.responseHeaders, "content-length"));
+    const evidenceStrength = MediaDetection.candidateEvidenceStrength({
+      url: details.url,
+      detected_type: detectedType,
+      mime_type: mimeType,
+      content_disposition: contentDisposition,
+      browser_filename: browserFilename,
+      content_length: Number.isFinite(contentLength) ? contentLength : 0,
+      request_method: details.method || "",
+      resource_type: details.type || "",
+      redirect_chain: redirectChain,
+      source: "webRequest"
+    });
+    if (!evidenceStrength) return;
     const isTinyDirectResource =
       Number.isFinite(contentLength) &&
       contentLength > 0 &&
@@ -117,13 +172,18 @@ chrome.webRequest.onHeadersReceived.addListener(
       details.type !== "media";
     if (isTinyDirectResource) return;
 
-    const capturedContext = requestContexts.get(details.requestId) || {};
-    queueCandidate(details.tabId, {
+    queueCandidate(candidateTabId, {
       url: details.url,
+      original_url: redirectChain[0] || details.url,
+      final_url: details.url,
+      redirect_chain: redirectChain,
       page_url: details.documentUrl || "",
       detected_type: detectedType,
       mime_type: mimeType,
+      browser_filename: browserFilename,
+      content_disposition: contentDisposition,
       content_length: Number.isFinite(contentLength) ? contentLength : 0,
+      evidence_strength: evidenceStrength,
       source: "webRequest",
       first_seen: details.timeStamp || Date.now(),
       referer: capturedContext.referer || details.documentUrl || details.initiator || "",
@@ -142,15 +202,71 @@ chrome.webRequest.onHeadersReceived.addListener(
 );
 
 chrome.webRequest.onCompleted.addListener(
-  (details) => requestContexts.delete(details.requestId),
+  (details) => {
+    requestContexts.delete(details.requestId);
+    redirectChains.delete(details.requestId);
+  },
   { urls: ["<all_urls>"] }
 );
 chrome.webRequest.onErrorOccurred.addListener(
-  (details) => requestContexts.delete(details.requestId),
+  (details) => {
+    requestContexts.delete(details.requestId);
+    redirectChains.delete(details.requestId);
+  },
   { urls: ["<all_urls>"] }
 );
 
-chrome.webNavigation.onCommitted.addListener((details) => {
+function downloadCandidate(item) {
+  return MediaDetection.candidateFromDownloadItem(item);
+}
+
+function resolveDownloadTabId(item, candidate) {
+  if (Number.isInteger(item.tabId) && item.tabId >= 0) return item.tabId;
+  const cutoff = Date.now() - ATTRIBUTION_MAX_AGE_MS;
+  const matchingTabs = new Set();
+  for (const url of MediaDetection.candidateIdentityUrls(candidate)) {
+    const tabs = candidateAttributions.get(url);
+    if (!tabs) continue;
+    for (const [tabId, seenAt] of tabs) {
+      if (seenAt >= cutoff) matchingTabs.add(tabId);
+      else tabs.delete(tabId);
+    }
+    if (!tabs.size) candidateAttributions.delete(url);
+  }
+  return matchingTabs.size === 1 ? [...matchingTabs][0] : -1;
+}
+
+function captureDownload(item) {
+  if (!item || !Number.isInteger(item.id)) return;
+  downloadItems.set(item.id, item);
+  const candidate = downloadCandidate(item);
+  if (!candidate) return;
+  const tabId = resolveDownloadTabId(item, candidate);
+  if (tabId >= 0) queueCandidate(tabId, candidate);
+}
+
+chrome.downloads.onCreated.addListener(captureDownload);
+
+chrome.downloads.onChanged.addListener((delta) => {
+  const updateItem = (item) => {
+    if (!item) return;
+    const updated = MediaDetection.applyDownloadDelta(item, delta);
+    captureDownload(updated);
+    if (["complete", "interrupted"].includes(updated.state)) downloadItems.delete(updated.id);
+  };
+
+  const cached = downloadItems.get(delta.id);
+  const isTerminal = ["complete", "interrupted"].includes(delta.state?.current);
+  if (cached && !isTerminal) {
+    updateItem(cached);
+    return;
+  }
+  chrome.downloads.search({ id: delta.id }, (items) => {
+    updateItem(Array.isArray(items) ? items[0] : cached);
+  });
+});
+
+chrome.webNavigation.onBeforeNavigate.addListener((details) => {
   if (details.frameId === 0) clearCandidates(details.tabId);
 });
 
@@ -208,6 +324,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "send-download") {
     const candidate = message.candidate || {};
+    if (MediaDetection.isBlobUrl(candidate.url || "") || candidate.is_browser_owned) {
+      sendResponse({
+        ok: false,
+        error: {
+          code: "browser_owned_download",
+          message: "Blob downloads remain browser-owned and cannot be reconstructed by the native host."
+        }
+      });
+      return false;
+    }
     let host = "";
     try {
       host = new URL(candidate.url).hostname;
@@ -225,6 +351,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       page_url: candidate.page_url || "",
       title: candidate.page_title || candidate.title || "",
       media_title: candidate.media_title || "",
+      browser_filename: candidate.browser_filename || "",
+      link_text: candidate.link_text || "",
       detected_type: candidate.detected_type || "DIRECT",
       mime_type: candidate.mime_type || "",
       source: candidate.source || "manual",

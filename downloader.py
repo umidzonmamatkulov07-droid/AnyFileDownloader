@@ -1,12 +1,10 @@
 import os
 import sys
 import re
-import time
 import shutil
 import threading
 import argparse
 import tempfile
-import urllib.request
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import customtkinter as ctk
@@ -14,12 +12,11 @@ from tkinter import filedialog, messagebox, Canvas
 
 from app_settings import AppSettings, QUALITY_OPTIONS, SettingsStore
 from diagnostics import configure_logging, log_event, redact_diagnostic, redact_url
+from direct_download import download_direct_file
 from download_policy import choose_download_engine
 from download_errors import DownloadFailure, hls_validation_failure, map_exception
 from ffmpeg_fallback import run_ffmpeg_hls_fallback
-from filename_resolver import filename_from_response, finalize_download, reserve_download_path
 from hls_validation import validate_hls_url
-from request_headers import media_request_headers
 from retry_policy import RetryPolicy, run_with_retry
 from temporary_artifacts import final_media_files, normalize_hls_container_extensions, promote_downloaded_files
 from ytdlp_options import build_ytdlp_options
@@ -55,6 +52,7 @@ class PrivacySafeYTDLPLogger:
         LOGGER.error("yt-dlp: %s", redact_diagnostic(message))
 
 HLS_RETRY_POLICY = RetryPolicy(max_attempts=3, delays=(0.75, 1.5))
+DIRECT_RETRY_POLICY = RetryPolicy(max_attempts=3, delays=(0.75, 1.5))
 
 class AnyFileDownloaderApp(ctk.CTk):
     def __init__(self, initial_url="", initial_page_url="", initial_title="", initial_context=None):
@@ -522,81 +520,49 @@ class AnyFileDownloaderApp(ctk.CTk):
         return decision.engine == "direct"
 
     def _download_direct_file(self, url, output_dir, request_context=None):
-        """Chunked HTTP/HTTPS streaming downloader with live throughput and progress metrics."""
+        """Run the response-aware direct downloader and update the existing HUD."""
         request_context = request_context or {}
-        request_headers = media_request_headers(request_context)
-        req = urllib.request.Request(url, headers=request_headers)
-        
-        with urllib.request.urlopen(req, timeout=30) as response:
-            content_length = response.headers.get('Content-Length')
-            total_size = int(content_length) if content_length else 0
-            
-            cd = response.headers.get('Content-Disposition')
-            response_mime = response.headers.get('Content-Type') or request_context.get('mime_type')
-            filename = filename_from_response(
-                url,
-                cd,
-                request_context.get("title"),
-                response_mime,
-                request_context.get("media_title"),
-            )
-            final_path, part_path = reserve_download_path(output_dir, filename)
-            
-            chunk_size = 64 * 1024
-            downloaded = 0
-            start_time = time.time()
-            last_calc_time = start_time
-            last_downloaded = 0
 
-            try:
-                with open(part_path, 'wb') as f:
-                    while True:
-                        chunk = response.read(chunk_size)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
+        def show_metadata(filename, detected_type, total_size):
+            size_text = f" ({total_size / (1024 * 1024):.1f} MB)" if total_size else ""
+            self.after(0, lambda: self.status_label.configure(
+                text=f"STATUS: DOWNLOADING {detected_type}: {filename}{size_text}"
+            ))
 
-                        now = time.time()
-                        dt = now - last_calc_time
-                        if dt >= 0.2:
-                            bytes_diff = downloaded - last_downloaded
-                            speed_mbps = (bytes_diff / dt) / (1024 * 1024) if dt > 0 else 0.0
-                            pct = int(downloaded / total_size * 100) if total_size > 0 else 50
-                            eta = int((total_size - downloaded) / (bytes_diff / dt)) if total_size > 0 and bytes_diff > 0 else 0
-                            eta_str = f"{eta // 60:02d}:{eta % 60:02d}" if eta else "--:--"
+        def show_progress(downloaded, total_size, elapsed):
+            speed_mbps = downloaded / max(elapsed, 0.001) / (1024 * 1024)
+            pct = min(100, int(downloaded / total_size * 100)) if total_size else 50
+            remaining = max(0, total_size - downloaded)
+            eta = int(remaining / (speed_mbps * 1024 * 1024)) if total_size and speed_mbps else 0
+            eta_str = f"{eta // 60:02d}:{eta % 60:02d}" if eta else "--:--"
+            self.current_progress_pct = pct
+            self.current_speed_mbps = speed_mbps
+            self.after(0, lambda: (
+                self.progress_bar.set(pct / 100.0),
+                self.speed_time_label.configure(
+                    text=f"Speed: {speed_mbps:.2f} MB/s | ETA: {eta_str} | Progress: {pct}%"
+                ),
+            ))
 
-                            self.current_progress_pct = pct
-                            self.current_speed_mbps = speed_mbps
-                            last_calc_time = now
-                            last_downloaded = downloaded
+        return download_direct_file(
+            url,
+            output_dir,
+            request_context,
+            progress_callback=show_progress,
+            metadata_callback=show_metadata,
+        )
 
-                            self.after(0, lambda p=pct, s=speed_mbps, e=eta_str: (
-                                self.progress_bar.set(p / 100.0),
-                                self.speed_time_label.configure(text=f"Speed: {s:.2f} MB/s | ETA: {e} | Progress: {p}%")
-                            ))
-
-                if total_size and downloaded != total_size:
-                    raise IOError(f"Incomplete download: expected {total_size} bytes, received {downloaded}")
-                return finalize_download(part_path, final_path)
-            except Exception:
-                try:
-                    part_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                raise
-
-    def _retry_status(self, engine, url, request_context, next_attempt, maximum, error, delay):
+    def _retry_status(self, engine, url, request_context, next_attempt, maximum, error, delay, detected_type="HLS"):
         log_event(
             LOGGER,
-            "hls_retry_scheduled",
+            "download_retry_scheduled",
             url,
             request_context,
-            detected_type="HLS",
+            detected_type=detected_type,
             category=map_exception(error).category,
         )
         self.after(0, lambda: self.status_label.configure(
-            text=f"STATUS: HLS {engine} RETRY [{next_attempt}/{maximum}] IN {delay:.1f}s..."
+            text=f"STATUS: {detected_type} {engine} RETRY [{next_attempt}/{maximum}] IN {delay:.1f}s..."
         ))
 
     def _validate_hls_with_retry(self, url, request_context):
@@ -681,10 +647,19 @@ class AnyFileDownloaderApp(ctk.CTk):
         )
         detected_type = decision.detected_type
 
-        if decision.engine == "direct":
+        should_try_direct = decision.engine == "direct" or (
+            selected_quality == "Auto" and detected_type in {"UNKNOWN", "DIRECT"}
+        )
+        if should_try_direct:
             log_event(LOGGER, "dispatch_selected", url, request_context, detected_type=detected_type, category="direct")
             try:
-                final_path = self._download_direct_file(url, output_dir, request_context)
+                final_path = run_with_retry(
+                    lambda: self._download_direct_file(url, output_dir, request_context),
+                    DIRECT_RETRY_POLICY,
+                    lambda attempt, maximum, error, delay: self._retry_status(
+                        "TRANSFER", url, request_context, attempt, maximum, error, delay, detected_type
+                    ),
+                )
                 log_event(LOGGER, "download_succeeded", url, request_context, detected_type=detected_type, category="direct")
                 return [final_path]
             except Exception as error:
@@ -697,7 +672,7 @@ class AnyFileDownloaderApp(ctk.CTk):
                     detected_type=detected_type,
                     category=failure.category,
                 )
-                if yt_dlp is None:
+                if detected_type in {"DOCUMENT", "ARCHIVE", "FILE"} or yt_dlp is None:
                     raise failure from error
 
         hls_validation = None
@@ -882,6 +857,8 @@ def parse_command_line():
     parser.add_argument("--page-url", default="", help="Source page URL supplied by the browser")
     parser.add_argument("--title", default="", help="Suggested page/media title supplied by the browser")
     parser.add_argument("--media-title", default="", help="Media-element title supplied by the browser")
+    parser.add_argument("--browser-filename", default="", help="Filename metadata supplied by the browser")
+    parser.add_argument("--link-text", default="", help="Safe anchor text supplied by the browser")
     parser.add_argument("--detected-type", default="", help="Browser media classification")
     parser.add_argument("--mime-type", default="", help="Browser-observed response MIME type")
     parser.add_argument("--source", default="", help="Browser detection source")
@@ -904,6 +881,8 @@ if __name__ == "__main__":
         "mime_type": arguments.mime_type,
         "source": arguments.source,
         "media_title": arguments.media_title,
+        "browser_filename": arguments.browser_filename,
+        "link_text": arguments.link_text,
         "referer": arguments.referer,
         "origin": arguments.origin,
         "user_agent": arguments.user_agent,
