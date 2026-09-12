@@ -1,10 +1,10 @@
-# AnyFileDownloader v3.3.0 + Stage 6 development
+# AnyFileDownloader v3.4.0
 
-AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. Version 3.3.0 is the approved Stage 5 document-download release and the current known-good version on `main`.
+AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. Version 3.4.0 is the approved Stage 6 release.
 
 The architecture remains Windows-compatible, while current registration and integration testing target Fedora with Google Chrome.
 
-The `stage6-single-instance-inline-download-ui` branch builds on that release with a persistent single desktop instance, a real sequential transfer queue, conservative inline webpage controls, and the restored large Hologram interface. Stage 6 is not published or tagged yet.
+Stage 6 adds a persistent single desktop instance, a real sequential transfer queue, conservative inline webpage controls, and the restored large Hologram interface while preserving the Stage 4/5 download engine and privacy boundaries.
 
 ## Architecture
 
@@ -168,7 +168,7 @@ Filename selection prefers an explicit meaningful server name, media-element met
 4. Choose this repository's `browser_extension` directory.
 5. Copy the displayed 32-character extension ID.
 
-The manifest version remains **3.3.0** while Stage 6 is under owner acceptance; no Stage 6 release tag exists.
+The extension version is **3.4.0**.
 
 ## Register the native host on Fedora/Linux
 

@@ -36,7 +36,7 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
 # Common direct file extensions that can be streamed directly via HTTP
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.4.0"
 LOGGER = configure_logging("anyfiledownloader.desktop")
 
 
