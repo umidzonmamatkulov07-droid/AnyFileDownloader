@@ -21,6 +21,16 @@ const SAFE_REQUEST_HEADERS = new Map([
   ["sec-fetch-site", "sec_fetch_site"],
   ["user-agent", "user_agent"]
 ]);
+const INLINE_BUTTON_SETTING = "showInlineButtons";
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.get(INLINE_BUTTON_SETTING).then((stored) => {
+    if (typeof stored[INLINE_BUTTON_SETTING] !== "boolean") {
+      return chrome.storage.local.set({ [INLINE_BUTTON_SETTING]: true });
+    }
+    return undefined;
+  });
+});
 
 function storageKey(tabId) {
   return `mediaCandidates:${tabId}`;
@@ -69,6 +79,10 @@ async function addCandidate(tabId, rawCandidate) {
   }
   const updated = MediaDetection.deduplicateCandidates(candidates, candidate);
   await chrome.storage.session.set({ [key]: updated });
+  chrome.tabs.sendMessage(tabId, {
+    type: "inline-candidates-updated",
+    candidates: MediaDetection.rankCandidates(updated)
+  }).catch(() => {});
   console.debug(`[AFD] candidate ${isDuplicate ? "duplicate merged" : "detected"}`, {
     type: candidate.detected_type,
     source: candidate.source,
@@ -184,6 +198,8 @@ chrome.webRequest.onHeadersReceived.addListener(
       content_disposition: contentDisposition,
       content_length: Number.isFinite(contentLength) ? contentLength : 0,
       evidence_strength: evidenceStrength,
+      request_method: details.method || "",
+      resource_type: details.type || "",
       source: "webRequest",
       first_seen: details.timeStamp || Date.now(),
       referer: capturedContext.referer || details.documentUrl || details.initiator || "",
@@ -314,6 +330,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }).catch((error) => {
       sendResponse({ ok: false, error: { code: "storage_error", message: error.message } });
     });
+    return true;
+  }
+
+  if (message?.type === "get-page-candidates") {
+    const tabId = sender.tab?.id;
+    if (!Number.isInteger(tabId)) {
+      sendResponse({ ok: false, candidates: [] });
+      return false;
+    }
+    chrome.storage.session.get(storageKey(tabId)).then((stored) => {
+      sendResponse({
+        ok: true,
+        candidates: MediaDetection.rankCandidates(stored[storageKey(tabId)] || [])
+      });
+    }).catch(() => sendResponse({ ok: false, candidates: [] }));
     return true;
   }
 

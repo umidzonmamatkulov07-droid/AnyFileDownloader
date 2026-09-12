@@ -106,3 +106,38 @@ mutationObserver.observe(document.documentElement, {
   attributes: true,
   attributeFilter: ["src", "href", "download"]
 });
+
+function sendInlineCandidate(candidate, done) {
+  chrome.runtime.sendMessage({ type: "send-download", candidate }, (response) => {
+    done(Boolean(response?.ok) && !chrome.runtime.lastError);
+  });
+}
+
+const inlineButtons = new AFDInlineButtons.InlineButtonController({
+  document,
+  MutationObserver,
+  sendCandidate: sendInlineCandidate
+});
+inlineButtons.start();
+
+chrome.storage.local.get({ showInlineButtons: true }, (stored) => {
+  inlineButtons.setEnabled(stored.showInlineButtons !== false);
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && changes.showInlineButtons) {
+    inlineButtons.setEnabled(changes.showInlineButtons.newValue !== false);
+  }
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "inline-candidates-updated") {
+    inlineButtons.setCandidates(message.candidates || []);
+  }
+});
+
+chrome.runtime.sendMessage({ type: "get-page-candidates" }, (response) => {
+  if (!chrome.runtime.lastError && response?.ok) {
+    inlineButtons.setCandidates(response.candidates || []);
+  }
+});

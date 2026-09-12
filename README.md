@@ -1,20 +1,23 @@
-# AnyFileDownloader v3.3.0
+# AnyFileDownloader v3.4.0
 
-AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. Version 3.3.0 is the approved Stage 5 document-download release and the current known-good version on `main`.
+AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. Version 3.4.0 is the approved Stage 6 release.
 
 The architecture remains Windows-compatible, while current registration and integration testing target Fedora with Google Chrome.
 
-Stage 5 adds generic document and ordinary-file detection and downloading while preserving the existing media-download workflow.
+Stage 6 adds a persistent single desktop instance, a real sequential transfer queue, conservative inline webpage controls, and the restored large Hologram interface while preserving the Stage 4/5 download engine and privacy boundaries.
 
 ## Architecture
 
 ```text
 Google Chrome
     -> passive media detection
-    -> user selects a candidate in the popup
+    -> user selects a candidate in the popup or its associated inline control
     -> Chrome Native Messaging
     -> native_host.py
+       -> local-user Unix socket if the desktop is already running
+       -> otherwise launch one desktop owner
     -> downloader.py
+       -> persistent sequential queue
        -> bounded HLS validation when applicable
        -> deterministic direct download or yt-dlp dispatch
        -> bounded serial retry for transient HLS transport failures
@@ -23,7 +26,25 @@ Google Chrome
     -> duplicate-safe final file
 ```
 
-Passive detection never launches the GUI. A native `ping` only tests connectivity. The desktop application is launched after the user explicitly presses a Download button.
+Passive detection never launches the GUI. A native `ping` only tests connectivity. The desktop application is launched after the user explicitly presses a popup or in-page Download button. Later requests are delivered to the existing desktop process and retained in its session queue.
+
+## Stage 6 desktop and IPC
+
+The desktop owns an advisory instance lock and an `AF_UNIX` socket inside its per-user configuration directory. The directory is mode `0700`; the lock and socket are mode `0600`; Linux peer credentials must match the current UID. The endpoint is not exposed over TCP. Kernel lock ownership handles crash recovery, and the lock owner safely replaces a stale socket before listening.
+
+The native host attempts one bounded IPC request first. When no owner exists it launches the desktop with the already-validated request. Concurrent launches converge on the one lock owner; losing processes forward their requests to that owner during its bounded startup window. Manual launches activate the existing window instead of creating another GUI.
+
+All accepted transfers enter one thread-safe sequential queue and remain visible for the current session as queued, active, completed, failed, or cancelled jobs. The queue uses the current Stage 4/5 dispatch, validation, retry, and safe file-promotion engine.
+
+The desktop opens at `1180x820`, has a `980x680` minimum, is resizable, and persists its last valid geometry. It uses stable Tk window alpha at `0.88`; true blur-behind remains compositor-dependent. The Download, Queue, Settings, and About tabs restore the richer Hologram layout, including the control matrix, central transfer console, circular HUD, and DATA STREAM statistics.
+
+Direct HTTP and yt-dlp progress callbacks feed actual downloaded bytes, total bytes when known, elapsed time, smoothed bytes/second, progress, and ETA into the UI. Unknown totals and ETAs are displayed as unknown. The HUD advances every 40 ms on the Tk event loop. Its speed is a bounded logarithmic mapping of the smoothed throughput: idle advances `0.3` degrees/tick, an active stall `0.55`, and live transfers increase from `0.8 + 2.6 * log1p(bytes_per_second / 128 KiB)` up to a hard maximum of `14` degrees/tick.
+
+## Stage 6 in-page controls
+
+The local extension setting **Show in-page download buttons** defaults to on. When enabled, a small cyan Hologram control is associated only with a matching visible video/audio element or exact recognized file anchor. Strong HLS/DASH web-request evidence may be associated with the sole visible player on a page. Multiple media choices use a compact menu capped at six items. Mutation, resize, and scroll observation handles dynamic players and stale-control cleanup without remote scripts or evaluation.
+
+Opaque `blob:` download anchors remain browser-owned: clicking their inline control invokes the original browser anchor, and neither the extension nor native host reads or reconstructs blob contents. Browser-owned media blobs are not offered to the desktop. Turning the setting off removes all controls while leaving the popup unchanged.
 
 ## Fedora development environment
 
@@ -147,7 +168,7 @@ Filename selection prefers an explicit meaningful server name, media-element met
 4. Choose this repository's `browser_extension` directory.
 5. Copy the displayed 32-character extension ID.
 
-The extension version is **3.3.0**.
+The extension version is **3.4.0**.
 
 ## Register the native host on Fedora/Linux
 
@@ -241,14 +262,16 @@ Review the redacted diagnostics for the validation type and failure category. Th
 
 - Fedora currently requires working Python Tkinter bindings for the GUI.
 - No Windows native-host registration script yet.
-- Each accepted request can open a separate GUI window.
+- Inline controls depend on a resource being safely associated with an actual player or file anchor; ambiguous background traffic intentionally receives no button.
 - No complete HLS or DASH parser.
 - No cookie or authenticated-session forwarding.
 - Blob/MSE media may not expose a usable URL.
 - Generic detection may include false positives.
 - FFmpeg is not bundled.
 - No final installer or packaged native host.
-- Parallel downloads share one progress display.
+- The persistent Stage 6 queue intentionally processes one transfer at a time.
+- Native single-instance IPC currently targets Unix-socket platforms; the existing downloader engine remains Windows-compatible, but equivalent Windows local IPC is future work.
+- Fedora/Wayland exposes stable whole-window alpha through Tk in the tested environment, but portable compositor blur-behind is not available.
 - DRM-protected media is intentionally unsupported.
 
 This repository does not yet contain a license file.

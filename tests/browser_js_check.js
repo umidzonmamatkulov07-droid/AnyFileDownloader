@@ -2,6 +2,7 @@
   const result = document.querySelector("#result");
   const files = [
     "../browser_extension/media_detection.js",
+    "../browser_extension/inline_buttons.js",
     "../browser_extension/background.js",
     "../browser_extension/content.js",
     "../browser_extension/popup.js"
@@ -79,6 +80,7 @@
       state: "in_progress"
     });
     assert(blobDownload.is_browser_owned === true, "opaque blob download");
+    await globalThis.runInlineButtonBrowserTests();
     result.textContent = "PASS";
   } catch (error) {
     result.textContent = `FAIL: ${error.message}`;
