@@ -1,10 +1,10 @@
-# AnyFileDownloader v3.2.0
+# AnyFileDownloader v3.3.0
 
-AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. Version 3.2.0 is the approved Linux recovery release and the current known-good version on `main`.
+AnyFileDownloader combines a CustomTkinter desktop downloader, a Chrome Manifest V3 extension, and a native-messaging bridge. Version 3.3.0 is the approved Stage 5 document-download release and the current known-good version on `main`.
 
 The architecture remains Windows-compatible, while current registration and integration testing target Fedora with Google Chrome.
 
-Development work for document and ordinary-file downloads is isolated on `stage5-document-downloads`. The application and extension remain version 3.2.0 until that work is manually approved for release.
+Stage 5 adds generic document and ordinary-file detection and downloading while preserving the existing media-download workflow.
 
 ## Architecture
 
@@ -147,7 +147,7 @@ Filename selection prefers an explicit meaningful server name, media-element met
 4. Choose this repository's `browser_extension` directory.
 5. Copy the displayed 32-character extension ID.
 
-The extension version is **3.2.0**.
+The extension version is **3.3.0**.
 
 ## Register the native host on Fedora/Linux
 
