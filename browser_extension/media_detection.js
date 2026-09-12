@@ -271,6 +271,8 @@
         ? candidate.evidence_strength
         : candidateEvidenceStrength(candidate),
       content_disposition: candidate.content_disposition || "",
+      resource_type: candidate.resource_type || "",
+      request_method: candidate.request_method || "",
       download_id: Number.isInteger(candidate.download_id) ? candidate.download_id : -1,
       download_state: candidate.download_state || "",
       download_error: candidate.download_error || "",

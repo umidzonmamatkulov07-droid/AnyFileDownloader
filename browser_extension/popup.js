@@ -4,9 +4,18 @@ const manualInput = document.querySelector("#manual-url");
 const nativeStatus = document.querySelector("#native-status");
 const requestStatus = document.querySelector("#request-status");
 const candidateDebug = document.querySelector("#candidate-debug");
+const showInlineButtons = document.querySelector("#show-inline-buttons");
 
 let activeTab = null;
 let candidates = [];
+
+chrome.storage.local.get({ showInlineButtons: true }, (stored) => {
+  showInlineButtons.checked = stored.showInlineButtons !== false;
+});
+
+showInlineButtons.addEventListener("change", () => {
+  chrome.storage.local.set({ showInlineButtons: showInlineButtons.checked });
+});
 
 function readableName(candidate) {
   if (candidate.browser_filename) {

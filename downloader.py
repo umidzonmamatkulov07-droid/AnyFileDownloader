@@ -5,6 +5,7 @@ import shutil
 import threading
 import argparse
 import tempfile
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import customtkinter as ctk
@@ -12,6 +13,8 @@ from tkinter import filedialog, messagebox, Canvas
 
 from app_settings import AppSettings, QUALITY_OPTIONS, SettingsStore
 from diagnostics import configure_logging, log_event, redact_diagnostic, redact_url
+from download_queue import DownloadJob, SequentialDownloadQueue
+from download_telemetry import DownloadTelemetry, hud_degrees_per_tick
 from direct_download import download_direct_file
 from download_policy import choose_download_engine
 from download_errors import DownloadFailure, hls_validation_failure, map_exception
@@ -20,6 +23,7 @@ from hls_validation import validate_hls_url
 from retry_policy import RetryPolicy, run_with_retry
 from temporary_artifacts import final_media_files, normalize_hls_container_extensions, promote_downloaded_files
 from ytdlp_options import build_ytdlp_options
+from single_instance import SingleInstanceService, send_ipc_message
 
 # Ensure yt-dlp is available or handled gracefully
 try:
@@ -32,7 +36,7 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
 # Common direct file extensions that can be streamed directly via HTTP
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
 LOGGER = configure_logging("anyfiledownloader.desktop")
 
 
@@ -58,16 +62,19 @@ class AnyFileDownloaderApp(ctk.CTk):
     def __init__(self, initial_url="", initial_page_url="", initial_title="", initial_context=None):
         super().__init__()
 
+        self.settings_store = SettingsStore()
+        saved_settings = self.settings_store.load()
         self.title(f"ANY FILEDOWNLOADER {APP_VERSION} [HOLOGRAM_EDITION]")
-        self.geometry("820x700")
-        self.minsize(750, 650)
-        self.resizable(False, False)
+        self.geometry(saved_settings.window_geometry)
+        self.minsize(980, 680)
+        self.resizable(True, True)
         
         # Enhanced Hologram Cyberpunk Transparency Level
         try:
-            self.attributes("-alpha", 0.78)
+            self.attributes("-alpha", saved_settings.window_opacity)
         except Exception:
             pass
+        self.window_opacity = saved_settings.window_opacity
         
         # Hologram Color Palette (deep translucent black/blue tones)
         self.bg_color = "#020408"
@@ -80,8 +87,6 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.configure(fg_color=self.bg_color)
 
         # Configuration variables
-        self.settings_store = SettingsStore()
-        saved_settings = self.settings_store.load()
         self.download_path = ctk.StringVar(value=saved_settings.download_directory)
         self.quality_selection = ctk.StringVar(value=saved_settings.quality)
         self.playlist_var = ctk.StringVar(value="on" if saved_settings.playlist else "off")
@@ -89,6 +94,7 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.sort_order = ctk.StringVar(value=saved_settings.sort_order)
         self.theme_mode = ctk.StringVar(value="Dark")
         self.download_history = []
+        self.session_history = []
         self.initial_request_metadata = {
             "url": initial_url,
             "page_url": initial_page_url,
@@ -101,7 +107,14 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.anim_angle = 0
         self.current_speed_mbps = 0.0
         self.current_progress_pct = 0
+        self.telemetry = DownloadTelemetry()
+        self.current_job_id = ""
+        self._last_progress_ui_at = 0.0
+        self._last_queue_progress_at = 0.0
+        self.instance_service = None
         self.has_ffmpeg = bool(shutil.which("ffmpeg"))
+        self.download_queue = SequentialDownloadQueue(self._process_queue_job, self._queue_job_changed)
+        self.download_queue.start()
         log_event(LOGGER, "desktop_started", detected_type=self.initial_request_metadata.get("detected_type"))
 
         # Build UI Structure with Hologram Styling
@@ -110,13 +123,14 @@ class AnyFileDownloaderApp(ctk.CTk):
         self._register_settings_persistence()
         
         self.overlay_window = None
+        self.protocol("WM_DELETE_WINDOW", self.close_application)
+        self.after(80, self._apply_window_opacity)
 
         # Start animation tick loop
         self.animate_hud()
 
         if initial_url:
-            self.url_entry.insert(0, initial_url)
-            self.after(250, self.start_download_process)
+            self.after(250, lambda: self.enqueue_download_request(dict(self.initial_request_metadata)))
 
     def _register_settings_persistence(self):
         for variable in (
@@ -135,6 +149,8 @@ class AnyFileDownloaderApp(ctk.CTk):
             playlist=self.playlist_var.get() == "on",
             queue_mode=self.queue_mode.get(),
             sort_order=self.sort_order.get(),
+            window_geometry=self.geometry(),
+            window_opacity=self._window_opacity(),
         )
         try:
             self.settings_store.save(settings)
@@ -143,30 +159,43 @@ class AnyFileDownloaderApp(ctk.CTk):
             if hasattr(self, "status_label"):
                 self.status_label.configure(text=f"STATUS: SETTINGS NOT SAVED ({error})")
 
+    def _window_opacity(self):
+        try:
+            return float(self.attributes("-alpha"))
+        except Exception:
+            return 0.88
+
+    def _apply_window_opacity(self):
+        try:
+            self.attributes("-alpha", self.window_opacity)
+        except Exception:
+            pass
+
     def create_header(self):
-        header_frame = ctk.CTkFrame(self, fg_color=self.panel_color, corner_radius=4, border_width=1, border_color=self.neon_cyan)
-        header_frame.pack(fill="x", padx=15, pady=(15, 5))
+        header_frame = ctk.CTkFrame(
+            self, fg_color=self.panel_color, corner_radius=5,
+            border_width=1, border_color=self.neon_cyan,
+        )
+        header_frame.pack(fill="x", padx=18, pady=(16, 7))
 
         logo_lbl = ctk.CTkLabel(
             header_frame, 
-            text=f"[AF]  ANY FILEDOWNLOADER {APP_VERSION} [HOLOGRAM]",
-            font=("Consolas", 15, "bold"), 
+            text=f"[ AF ]   ANY FILEDOWNLOADER   v{APP_VERSION}",
+            font=("Consolas", 18, "bold"),
             text_color=self.neon_cyan
         )
-        logo_lbl.pack(side="left", padx=15, pady=10)
+        logo_lbl.pack(side="left", padx=18, pady=14)
 
         ffmpeg_status = "FFMPEG: READY" if self.has_ffmpeg else "FFMPEG: NOT FOUND"
-        badge_color = self.neon_amber if self.has_ffmpeg else self.neon_pink
-        status_badge = ctk.CTkLabel(
-            header_frame, 
-            text=f"NEURAL_LINK: ACTIVE | {ffmpeg_status}", 
-            font=("Consolas", 11, "bold"), 
-            text_color=badge_color
-        )
-        status_badge.pack(side="right", padx=15, pady=10)
+        ytdlp_status = "YT-DLP: READY" if yt_dlp is not None else "YT-DLP: NOT FOUND"
+        ctk.CTkLabel(
+            header_frame, text=f"{ffmpeg_status}   |   {ytdlp_status}",
+            font=("Consolas", 11, "bold"),
+            text_color=self.neon_amber if self.has_ffmpeg and yt_dlp is not None else self.neon_pink,
+        ).pack(side="right", padx=18, pady=14)
 
     def create_navigation_tabs(self):
-        """Creates top tabview styled with hologram borders and colors."""
+        """Create the four-panel Hologram workspace."""
         self.tab_view = ctk.CTkTabview(
             self, 
             fg_color=self.panel_color, 
@@ -178,21 +207,57 @@ class AnyFileDownloaderApp(ctk.CTk):
             border_color="#111827"
         )
         self.tab_view._segmented_button.configure(text_color=self.text_dim)
-        self.tab_view.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.tab_view.pack(fill="both", expand=True, padx=18, pady=(0, 16))
 
-        self.main_tab = self.tab_view.add("Downloader")
+        self.main_tab = self.tab_view.add("Download")
+        self.queue_tab = self.tab_view.add("Queue")
         self.settings_tab = self.tab_view.add("Settings")
+        self.about_tab = self.tab_view.add("About")
 
         self.create_main_tab_content()
+        self.create_queue_tab_content()
         self.create_settings_tab_content()
+        self.create_about_tab_content()
 
     def create_main_tab_content(self):
-        """Builds main downloader interface with cyberpunk HUD and controls."""
-        # URL Input Section
-        url_frame = ctk.CTkFrame(self.main_tab, fg_color="transparent")
-        url_frame.pack(fill="x", padx=10, pady=10)
+        """Build the large three-column transfer console."""
+        self.main_tab.grid_columnconfigure(0, minsize=180)
+        self.main_tab.grid_columnconfigure(1, weight=1, minsize=520)
+        self.main_tab.grid_columnconfigure(2, minsize=205)
+        self.main_tab.grid_rowconfigure(0, weight=1)
 
-        self.url_label = ctk.CTkLabel(url_frame, text="NEURAL_LINK_ADDRESS (URL or Multiple URLs separated by space/newline):", font=("Consolas", 12, "bold"), text_color=self.neon_cyan)
+        left_panel = ctk.CTkFrame(
+            self.main_tab, fg_color="#030711", border_width=1,
+            border_color="#172033", corner_radius=5, width=180,
+        )
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(8, 5), pady=9)
+        left_panel.grid_propagate(False)
+        ctk.CTkLabel(left_panel, text="CONTROL MATRIX", font=("Consolas", 12, "bold"), text_color=self.neon_cyan).pack(anchor="w", padx=14, pady=(16, 12))
+        self.left_urls_label = self._sidebar_stat(left_panel, "URLS", "0 detected")
+        self.left_queue_label = self._sidebar_stat(left_panel, "QUEUE", "0 items")
+        self.left_history_label = self._sidebar_stat(left_panel, "HISTORY", "0 session")
+        ctk.CTkButton(
+            left_panel, text="OPEN QUEUE", height=34, fg_color="#0B132B",
+            hover_color="#14213D", text_color=self.neon_cyan,
+            font=("Consolas", 10, "bold"),
+            command=lambda: self.tab_view.set("Queue"),
+        ).pack(fill="x", padx=12, pady=(18, 6))
+        ctk.CTkButton(
+            left_panel, text="QUICK ACTION", height=34, fg_color="#0B132B",
+            hover_color="#14213D", text_color=self.neon_amber,
+            font=("Consolas", 10, "bold"), command=self.open_download_overlay_menu,
+        ).pack(fill="x", padx=12, pady=6)
+
+        center_panel = ctk.CTkFrame(
+            self.main_tab, fg_color="#050911", border_width=1,
+            border_color="#172033", corner_radius=5,
+        )
+        center_panel.grid(row=0, column=1, sticky="nsew", padx=5, pady=9)
+
+        url_frame = ctk.CTkFrame(center_panel, fg_color="transparent")
+        url_frame.pack(fill="x", padx=16, pady=(17, 10))
+
+        self.url_label = ctk.CTkLabel(url_frame, text="NEURAL_LINK_ADDRESS / URL", font=("Consolas", 12, "bold"), text_color=self.neon_cyan)
         self.url_label.pack(anchor="w", pady=(0, 5))
 
         url_input_row = ctk.CTkFrame(url_frame, fg_color="transparent")
@@ -201,7 +266,7 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.url_entry = ctk.CTkEntry(
             url_input_row, 
             placeholder_text="Paste video, document, archive, or playlist stream link(s) here...", 
-            height=38,
+            height=45,
             font=("Consolas", 11),
             fg_color="#020408",
             border_color=self.neon_cyan,
@@ -213,7 +278,7 @@ class AnyFileDownloaderApp(ctk.CTk):
             url_input_row, 
             text="PASTE", 
             width=75, 
-            height=38, 
+            height=45,
             fg_color="#0B132B",
             hover_color="#1C2541",
             text_color=self.text_dim,
@@ -223,8 +288,8 @@ class AnyFileDownloaderApp(ctk.CTk):
         self.paste_btn.pack(side="right")
 
         # Controls Grid (Quality Selector, Playlist Checkbox, Overlay Sim Button)
-        controls_frame = ctk.CTkFrame(self.main_tab, fg_color="#020408", border_width=1, border_color="#111827", corner_radius=4)
-        controls_frame.pack(fill="x", padx=10, pady=5)
+        controls_frame = ctk.CTkFrame(center_panel, fg_color="#020408", border_width=1, border_color="#111827", corner_radius=4)
+        controls_frame.pack(fill="x", padx=16, pady=7)
 
         # Quality / Format Dropdown
         qual_box_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
@@ -261,32 +326,14 @@ class AnyFileDownloaderApp(ctk.CTk):
         )
         self.playlist_checkbox.pack(anchor="w", pady=(18, 0))
 
-        # Quick action overlay trigger button
-        overlay_sim_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
-        overlay_sim_frame.pack(side="right", padx=10, pady=10)
-
-        self.simulate_overlay_btn = ctk.CTkButton(
-            overlay_sim_frame, 
-            text="Quick Action Overlay", 
-            fg_color="#0B132B", 
-            hover_color="#1C2541",
-            text_color=self.neon_amber,
-            font=("Consolas", 10, "bold"),
-            command=self.open_download_overlay_menu,
-            width=150,
-            height=32
-        )
-        self.simulate_overlay_btn.pack(pady=(15, 0))
-
-        # Main Action Button
-        action_frame = ctk.CTkFrame(self.main_tab, fg_color="transparent")
-        action_frame.pack(fill="x", padx=10, pady=10)
+        action_frame = ctk.CTkFrame(center_panel, fg_color="transparent")
+        action_frame.pack(fill="x", padx=16, pady=10)
 
         self.download_btn = ctk.CTkButton(
             action_frame, 
             text="INITIATE DATA TRANSFER", 
-            height=42, 
-            font=("Consolas", 13, "bold"),
+            height=50,
+            font=("Consolas", 14, "bold"),
             fg_color=self.neon_cyan,
             hover_color="#00B4D8",
             text_color="#000000",
@@ -294,27 +341,68 @@ class AnyFileDownloaderApp(ctk.CTk):
         )
         self.download_btn.pack(fill="x")
 
-        # Status Panel with Circular Sci-Fi HUD Canvas & Neon Indicators
-        status_frame = ctk.CTkFrame(self.main_tab, fg_color="#020408", border_width=1, border_color="#111827", corner_radius=4)
-        status_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        status_frame = ctk.CTkFrame(center_panel, fg_color="#020408", border_width=1, border_color="#111827", corner_radius=4)
+        status_frame.pack(fill="both", expand=True, padx=16, pady=(5, 16))
 
         self.status_label = ctk.CTkLabel(status_frame, text="STATUS: STANDBY FOR TRANSMISSION", font=("Consolas", 11, "bold"), text_color=self.neon_amber)
-        self.status_label.pack(anchor="w", padx=15, pady=(10, 2))
+        self.status_label.pack(anchor="w", padx=17, pady=(14, 2))
+        self.current_item_label = ctk.CTkLabel(
+            status_frame, text="NO ACTIVE DATA STREAM", font=("Consolas", 10),
+            text_color=self.text_dim, wraplength=500, justify="left",
+        )
+        self.current_item_label.pack(anchor="w", padx=17, pady=(0, 5))
 
         # Circular Sci-Fi HUD Canvas Container
         hud_container = ctk.CTkFrame(status_frame, fg_color="transparent")
         hud_container.pack(pady=2)
 
-        self.canvas_size = 110
+        self.canvas_size = 190
         self.hud_canvas = Canvas(hud_container, width=self.canvas_size, height=self.canvas_size, bg="#020408", highlightthickness=0)
         self.hud_canvas.pack()
 
         self.progress_bar = ctk.CTkProgressBar(status_frame, progress_color=self.neon_cyan, fg_color="#0B132B")
-        self.progress_bar.pack(fill="x", padx=15, pady=5)
+        self.progress_bar.pack(fill="x", padx=20, pady=10)
         self.progress_bar.set(0)
 
-        self.speed_time_label = ctk.CTkLabel(status_frame, text="Speed: 0.0 MB/s | ETA: --:--", font=("Consolas", 10), text_color=self.text_dim)
-        self.speed_time_label.pack(anchor="w", padx=15, pady=(0, 10))
+        self.speed_time_label = ctk.CTkLabel(status_frame, text="Speed: 0 B/s | ETA: --:-- | Progress: --", font=("Consolas", 10), text_color=self.text_dim)
+        self.speed_time_label.pack(anchor="w", padx=20, pady=(0, 14))
+
+        right_panel = ctk.CTkFrame(
+            self.main_tab, fg_color="#030711", border_width=1,
+            border_color=self.neon_cyan, corner_radius=5, width=205,
+        )
+        right_panel.grid(row=0, column=2, sticky="nsew", padx=(5, 8), pady=9)
+        right_panel.grid_propagate(False)
+        ctk.CTkLabel(right_panel, text="DATA STREAM", font=("Consolas", 13, "bold"), text_color=self.neon_cyan).pack(anchor="w", padx=15, pady=(17, 13))
+        self.stream_speed_value = self._stream_stat(right_panel, "SPEED", "0 B/s")
+        self.stream_progress_value = self._stream_stat(right_panel, "PROGRESS", "--")
+        self.stream_elapsed_value = self._stream_stat(right_panel, "ELAPSED", "00:00")
+        self.stream_queue_value = self._stream_stat(right_panel, "QUEUE", "0 items")
+        self.stream_status_value = self._stream_stat(right_panel, "STATUS", "IDLE", self.neon_amber)
+
+    def _sidebar_stat(self, parent, title, value):
+        frame = ctk.CTkFrame(parent, fg_color="#020408", corner_radius=3)
+        frame.pack(fill="x", padx=12, pady=5)
+        ctk.CTkLabel(frame, text=title, font=("Consolas", 9, "bold"), text_color=self.text_dim).pack(anchor="w", padx=9, pady=(7, 0))
+        label = ctk.CTkLabel(frame, text=value, font=("Consolas", 11, "bold"), text_color="#FFFFFF")
+        label.pack(anchor="w", padx=9, pady=(0, 7))
+        return label
+
+    def _stream_stat(self, parent, title, value, color=None):
+        ctk.CTkLabel(parent, text=title, font=("Consolas", 9, "bold"), text_color=self.text_dim).pack(anchor="w", padx=16, pady=(9, 0))
+        label = ctk.CTkLabel(parent, text=value, font=("Consolas", 16, "bold"), text_color=color or "#FFFFFF")
+        label.pack(anchor="w", padx=16, pady=(0, 4))
+        return label
+
+    def create_queue_tab_content(self):
+        header = ctk.CTkFrame(self.queue_tab, fg_color="transparent")
+        header.pack(fill="x", padx=12, pady=(12, 5))
+        ctk.CTkLabel(header, text="TRANSFER QUEUE", font=("Consolas", 15, "bold"), text_color=self.neon_cyan).pack(side="left")
+        self.queue_summary_label = ctk.CTkLabel(header, text="0 items", font=("Consolas", 10), text_color=self.neon_amber)
+        self.queue_summary_label.pack(side="right")
+        self.queue_list_frame = ctk.CTkScrollableFrame(self.queue_tab, fg_color="#020408")
+        self.queue_list_frame.pack(fill="both", expand=True, padx=12, pady=(5, 12))
+        self._render_queue()
 
     def create_settings_tab_content(self):
         """Builds the advanced Settings panel styled with cyberpunk aesthetics."""
@@ -359,36 +447,269 @@ class AnyFileDownloaderApp(ctk.CTk):
         ctk.CTkRadioButton(sort_row, text="Newest to Oldest", variable=self.sort_order, value="Newest to Oldest", text_color="#FFFFFF", border_color=self.neon_cyan, font=("Consolas", 10)).pack(side="left", padx=10)
         ctk.CTkRadioButton(sort_row, text="Oldest to Newest", variable=self.sort_order, value="Oldest to Newest", text_color="#FFFFFF", border_color=self.neon_cyan, font=("Consolas", 10)).pack(side="left", padx=10)
 
+        appearance_frame = ctk.CTkFrame(settings_container, fg_color="#020408", border_width=1, border_color="#111827")
+        appearance_frame.pack(fill="x", pady=8, padx=5)
+        ctk.CTkLabel(appearance_frame, text="HOLOGRAM GLASS", font=("Consolas", 11, "bold"), text_color=self.neon_cyan).pack(anchor="w", padx=10, pady=(8, 2))
+        ctk.CTkLabel(
+            appearance_frame, text="Window opacity: 88% (stable compositor alpha; blur depends on the desktop compositor)",
+            font=("Consolas", 10), text_color=self.text_dim,
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+    def create_about_tab_content(self):
+        panel = ctk.CTkFrame(self.about_tab, fg_color="#020408", border_width=1, border_color=self.neon_cyan)
+        panel.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(panel, text="ANY FILEDOWNLOADER", font=("Consolas", 22, "bold"), text_color=self.neon_cyan).pack(pady=(55, 8))
+        ctk.CTkLabel(panel, text=f"v{APP_VERSION} · HOLOGRAM EDITION", font=("Consolas", 12, "bold"), text_color=self.neon_amber).pack()
+        ctk.CTkLabel(
+            panel,
+            text="Local-first media, document, archive, and direct-file transfers.\nNo cookies or Authorization values are captured or forwarded.",
+            font=("Consolas", 11), text_color="#FFFFFF", justify="center",
+        ).pack(pady=18)
+
     def animate_hud(self):
-        """Renders the sci-fi rotating vector arcs whose speed scales with throughput."""
+        """Render real-throughput-driven arcs without blocking the Tk event loop."""
         self.hud_canvas.delete("all")
         cx, cy = self.canvas_size / 2, self.canvas_size / 2
-        r = 42
+        r = 72
 
         # Draw dark inner backing ring
         self.hud_canvas.create_oval(cx-r, cy-r, cx+r, cy+r, outline="#111827", width=3)
 
-        if self.is_downloading:
-            speed_factor = max(0.5, min(self.current_speed_mbps, 30.0))
-            self.anim_angle = (self.anim_angle + int(max(2, speed_factor * 2.5))) % 360
-            
-            # Sci-Fi dual opposing amber vector arcs
-            self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=self.anim_angle, extent=70, outline=self.neon_amber, width=4, style="arc")
-            self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=(self.anim_angle + 180) % 360, extent=70, outline=self.neon_amber, width=4, style="arc")
-            
-            center_text = f"{self.current_progress_pct}%"
-            next_tick = 30
-        else:
-            # Idle static dashes
-            self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=45, extent=60, outline="#374151", width=2, style="arc")
-            self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=225, extent=60, outline="#374151", width=2, style="arc")
-            center_text = f"{self.current_progress_pct}%"
-            next_tick = 200
+        snapshot = self.telemetry.snapshot()
+        if snapshot.active and time.monotonic() - self.telemetry.updated_at > 1.0:
+            snapshot = self.telemetry.mark_stalled()
+        self.anim_angle = (self.anim_angle + hud_degrees_per_tick(snapshot.speed_bps, snapshot.active)) % 360
+        arc_color = self.neon_amber if snapshot.active else "#374151"
+        self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=self.anim_angle, extent=72, outline=arc_color, width=5, style="arc")
+        self.hud_canvas.create_arc(cx-r, cy-r, cx+r, cy+r, start=(self.anim_angle + 180) % 360, extent=72, outline=arc_color, width=5, style="arc")
+        inner = r - 13
+        self.hud_canvas.create_arc(cx-inner, cy-inner, cx+inner, cy+inner, start=-self.anim_angle * 0.65, extent=44, outline=self.neon_pink if snapshot.active else "#1f2937", width=2, style="arc")
+        center_text = f"{snapshot.progress_percent:.0f}%" if snapshot.progress_percent is not None else "--"
 
         # Center percentage text
-        self.hud_canvas.create_text(cx, cy, text=center_text, fill=self.neon_cyan, font=("Consolas", 12, "bold"))
+        self.hud_canvas.create_text(cx, cy, text=center_text, fill=self.neon_cyan, font=("Consolas", 20, "bold"))
+        self._update_stream_statistics(snapshot)
+        self.after(40, self.animate_hud)
 
-        self.after(next_tick, self.animate_hud)
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = max(0, int(seconds or 0))
+        return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+    @staticmethod
+    def _format_rate(speed_bps):
+        speed = max(0.0, float(speed_bps or 0.0))
+        if speed >= 1024 * 1024:
+            return f"{speed / (1024 * 1024):.2f} MB/s"
+        if speed >= 1024:
+            return f"{speed / 1024:.1f} KB/s"
+        return f"{speed:.0f} B/s"
+
+    def _update_stream_statistics(self, snapshot):
+        jobs = self.download_queue.jobs()
+        waiting = sum(job.status in {"queued", "active"} for job in jobs)
+        progress_text = f"{snapshot.progress_percent:.0f}%" if snapshot.progress_percent is not None else "--"
+        eta_text = self._format_duration(snapshot.eta_seconds) if snapshot.eta_seconds is not None else "--:--"
+        speed_text = self._format_rate(snapshot.speed_bps)
+        self.current_speed_mbps = snapshot.speed_bps / (1024 * 1024)
+        self.current_progress_pct = int(snapshot.progress_percent or 0)
+        self.stream_speed_value.configure(text=speed_text)
+        self.stream_progress_value.configure(text=progress_text)
+        self.stream_elapsed_value.configure(text=self._format_duration(snapshot.elapsed_seconds))
+        self.stream_queue_value.configure(text=f"{waiting} item" if waiting == 1 else f"{waiting} items")
+        self.stream_status_value.configure(
+            text="ACTIVE" if snapshot.active else "IDLE",
+            text_color=self.neon_cyan if snapshot.active else self.neon_amber,
+        )
+        self.speed_time_label.configure(
+            text=f"Speed: {speed_text} | ETA: {eta_text} | Progress: {progress_text}"
+        )
+
+    def _safe_job_name(self, job):
+        request = job.request
+        return (
+            request.get("browser_filename")
+            or request.get("media_title")
+            or request.get("title")
+            or redact_url(request.get("url", ""))
+            or "Untitled transfer"
+        )
+
+    def _render_queue(self):
+        if not hasattr(self, "queue_list_frame"):
+            return
+        for widget in self.queue_list_frame.winfo_children():
+            widget.destroy()
+        jobs = self.download_queue.jobs()
+        if not jobs:
+            ctk.CTkLabel(
+                self.queue_list_frame, text="NO TRANSFERS IN THIS SESSION",
+                font=("Consolas", 11), text_color=self.text_dim,
+            ).pack(pady=35)
+        colors = {
+            "queued": self.neon_amber,
+            "active": self.neon_cyan,
+            "completed": "#4ADE80",
+            "failed": self.neon_pink,
+            "cancelled": self.text_dim,
+        }
+        for job in jobs:
+            row = ctk.CTkFrame(self.queue_list_frame, fg_color="#050911", border_width=1, border_color="#172033")
+            row.pack(fill="x", padx=5, pady=5)
+            ctk.CTkLabel(
+                row, text=self._safe_job_name(job), anchor="w",
+                font=("Consolas", 11, "bold"), text_color="#FFFFFF",
+            ).pack(side="left", fill="x", expand=True, padx=12, pady=10)
+            progress = f" {job.progress:.0f}%" if job.status in {"active", "completed"} else ""
+            ctk.CTkLabel(
+                row, text=f"{job.status.upper()}{progress}",
+                font=("Consolas", 10, "bold"), text_color=colors.get(job.status, self.text_dim),
+            ).pack(side="right", padx=12, pady=10)
+        summary = f"{len(jobs)} item" if len(jobs) == 1 else f"{len(jobs)} items"
+        self.queue_summary_label.configure(text=summary)
+        active_count = sum(job.status in {"queued", "active"} for job in jobs)
+        self.left_queue_label.configure(text=f"{active_count} items")
+        self.left_history_label.configure(text=f"{len(self.session_history)} session")
+
+    def _queue_job_changed(self, job):
+        self.after(0, lambda current=job: self._apply_queue_job_change(current))
+
+    def _apply_queue_job_change(self, job):
+        if job.status == "active":
+            self.is_downloading = True
+            self.status_label.configure(text="STATUS: DATA STREAM ACTIVE")
+            self.current_item_label.configure(text=self._safe_job_name(job))
+        elif job.status in {"completed", "failed", "cancelled"}:
+            if not any(item.id == job.id for item in self.session_history):
+                self.session_history.append(job)
+            if self.current_job_id == job.id:
+                self.telemetry.finish()
+                self.is_downloading = False
+                self.current_job_id = ""
+                if job.status == "completed":
+                    self.status_label.configure(text="STATUS: DATA TRANSFER COMPLETE")
+                elif job.status == "failed":
+                    self.status_label.configure(text="STATUS: STREAM ERROR ENCOUNTERED")
+                else:
+                    self.status_label.configure(text="STATUS: TRANSFER CANCELLED")
+        self._render_queue()
+
+    def enqueue_request_threadsafe(self, request):
+        if request.get("action") != "download" or not self.parse_urls(request.get("url", "")):
+            return {"ok": False, "error": {"code": "invalid_request", "message": "Invalid download request"}}
+        self.after(0, lambda: self.enqueue_download_request(request))
+        return {"ok": True, "status": "queued", "pid": os.getpid()}
+
+    def ipc_status(self):
+        jobs = self.download_queue.jobs()
+        telemetry = self.telemetry.snapshot()
+        return {
+            "ok": True,
+            "pid": os.getpid(),
+            "jobs": [
+                {"id": job.id, "status": job.status, "progress": round(job.progress, 1)}
+                for job in jobs
+            ],
+            "telemetry": {
+                "active": telemetry.active,
+                "downloaded_bytes": telemetry.downloaded_bytes,
+                "total_bytes": telemetry.total_bytes,
+                "speed_bps": round(telemetry.speed_bps, 1),
+                "progress_percent": (
+                    round(telemetry.progress_percent, 1)
+                    if telemetry.progress_percent is not None
+                    else None
+                ),
+                "elapsed_seconds": round(telemetry.elapsed_seconds, 1),
+                "eta_seconds": (
+                    round(telemetry.eta_seconds, 1)
+                    if telemetry.eta_seconds is not None
+                    else None
+                ),
+                "hud_degrees_per_tick": round(
+                    hud_degrees_per_tick(telemetry.speed_bps, telemetry.active), 2
+                ),
+            },
+        }
+
+    def enqueue_download_request(self, request):
+        request = dict(request)
+        request["action"] = "download"
+        request["url"] = request.get("url", "")
+        request["_download_options"] = {
+            "output_dir": self.download_path.get(),
+            "selected_quality": self.quality_selection.get(),
+            "is_playlist": self.playlist_var.get() == "on",
+            "sorting_setting": self.sort_order.get(),
+        }
+        job = self.download_queue.enqueue(request)
+        self.download_history.append(request["url"])
+        self.left_urls_label.configure(text=f"{len(self.download_history)} detected")
+        self.status_label.configure(text="STATUS: REQUEST QUEUED")
+        self.current_item_label.configure(text=self._safe_job_name(job))
+        self.activate_window()
+        return job
+
+    def _process_queue_job(self, job):
+        request = job.request
+        options = request.get("_download_options", {})
+        output_dir = options.get("output_dir", self.download_path.get())
+        try:
+            Path(output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise DownloadFailure(
+                "filesystem_error",
+                "Could not create the download directory.",
+                redact_diagnostic(str(error)),
+            ) from error
+        self.current_job_id = job.id
+        self._last_progress_ui_at = 0.0
+        self._last_queue_progress_at = 0.0
+        self.telemetry.start()
+        return self._download_single_url(
+            request["url"],
+            output_dir,
+            options.get("selected_quality", "Auto"),
+            options.get("is_playlist", False),
+            options.get("sorting_setting", "Newest to Oldest"),
+            {key: value for key, value in request.items() if not key.startswith("_")},
+        )
+
+    def _accept_telemetry(self, downloaded, total, speed_bps=None):
+        if hasattr(self, "telemetry"):
+            snapshot = self.telemetry.update(downloaded, total, speed_bps)
+            self.current_speed_mbps = snapshot.speed_bps / (1024 * 1024)
+            self.current_progress_pct = int(snapshot.progress_percent or self.current_progress_pct)
+            now = time.monotonic()
+            should_refresh_queue = (
+                now - getattr(self, "_last_queue_progress_at", 0.0) >= 0.25
+                or snapshot.progress_percent == 100.0
+            )
+            if (
+                should_refresh_queue
+                and getattr(self, "current_job_id", "")
+                and hasattr(self, "download_queue")
+            ):
+                self._last_queue_progress_at = now
+                self.download_queue.update_progress(self.current_job_id, snapshot.progress_percent or 0)
+            return snapshot
+        return None
+
+    def activate_window(self):
+        try:
+            self.deiconify()
+            self.lift()
+        except Exception:
+            pass
+
+    def close_application(self):
+        try:
+            self._persist_settings()
+            self.download_queue.stop()
+            if self.instance_service is not None:
+                self.instance_service.stop()
+        finally:
+            self.destroy()
 
     def paste_from_clipboard(self):
         try:
@@ -445,40 +766,22 @@ class AnyFileDownloaderApp(ctk.CTk):
 
     def start_download_process(self):
         raw_text = self.url_entry.get().strip()
-        initial_url = self.initial_request_metadata.get("url")
-        urls = [initial_url] if initial_url and raw_text == initial_url else self.parse_urls(raw_text)
+        urls = self.parse_urls(raw_text)
         
         if not urls:
             messagebox.showwarning("Missing URL", "Please enter or paste at least one valid link (http:// or https://) first.")
             return
 
-        for u in urls:
-            if u not in self.download_history:
-                self.download_history.append(u)
-
-        self.download_btn.configure(state="disabled", text="TRANSFERRING...")
-        self.is_downloading = True
-        self.current_speed_mbps = 0.5
-        self.current_progress_pct = 1
-        self.status_label.configure(text="STATUS: INITIALIZING DATA STREAM...")
-
-        request_metadata = {}
-        if initial_url in urls:
-            request_metadata[initial_url] = dict(self.initial_request_metadata)
-        self.initial_request_metadata = {}
-        download_options = {
-            "output_dir": self.download_path.get(),
-            "selected_quality": self.quality_selection.get(),
-            "is_playlist": self.playlist_var.get() == "on",
-            "sorting_setting": self.sort_order.get(),
-            "queue_mode": self.queue_mode.get(),
-        }
-
-        threading.Thread(
-            target=self._run_downloader_manager,
-            args=(urls, request_metadata, download_options),
-            daemon=True,
-        ).start()
+        for url in urls:
+            self.enqueue_download_request({
+                "action": "download",
+                "url": url,
+                "detected_type": "UNKNOWN",
+                "source": "manual",
+            })
+        self.url_entry.delete(0, "end")
+        self.download_btn.configure(text="QUEUED")
+        self.after(700, lambda: self.download_btn.configure(text="INITIATE DATA TRANSFER"))
 
     def _yt_dlp_progress_hook(self, d):
         """Real-time progress hook from yt-dlp to update HUD and progress bar."""
@@ -497,12 +800,19 @@ class AnyFileDownloaderApp(ctk.CTk):
 
             self.current_progress_pct = min(100, max(0, pct))
             self.current_speed_mbps = speed_mbps
+            AnyFileDownloaderApp._accept_telemetry(self, downloaded, total_bytes, speed)
 
             self.after(0, lambda p=pct, s=speed_mbps, e=eta_str: (
                 self.progress_bar.set(p / 100.0),
                 self.speed_time_label.configure(text=f"Speed: {s:.2f} MB/s | ETA: {e} | Progress: {p}%")
             ))
         elif d.get('status') == 'finished':
+            if hasattr(self, "telemetry"):
+                self.telemetry.update(
+                    d.get("total_bytes") or d.get("downloaded_bytes") or 0,
+                    d.get("total_bytes") or d.get("downloaded_bytes") or 0,
+                    0,
+                )
             self.after(0, lambda: (
                 self.progress_bar.set(1.0),
                 self.status_label.configure(text="STATUS: POST-PROCESSING DATA STREAM...")
@@ -524,19 +834,33 @@ class AnyFileDownloaderApp(ctk.CTk):
         request_context = request_context or {}
 
         def show_metadata(filename, detected_type, total_size):
+            if hasattr(self, "telemetry") and total_size and not self.telemetry.total_bytes:
+                self.telemetry.total_bytes = total_size
             size_text = f" ({total_size / (1024 * 1024):.1f} MB)" if total_size else ""
             self.after(0, lambda: self.status_label.configure(
                 text=f"STATUS: DOWNLOADING {detected_type}: {filename}{size_text}"
             ))
 
         def show_progress(downloaded, total_size, elapsed):
-            speed_mbps = downloaded / max(elapsed, 0.001) / (1024 * 1024)
+            snapshot = AnyFileDownloaderApp._accept_telemetry(self, downloaded, total_size)
+            speed_mbps = (
+                snapshot.speed_bps / (1024 * 1024)
+                if snapshot is not None
+                else downloaded / max(elapsed, 0.001) / (1024 * 1024)
+            )
             pct = min(100, int(downloaded / total_size * 100)) if total_size else 50
             remaining = max(0, total_size - downloaded)
             eta = int(remaining / (speed_mbps * 1024 * 1024)) if total_size and speed_mbps else 0
             eta_str = f"{eta // 60:02d}:{eta % 60:02d}" if eta else "--:--"
             self.current_progress_pct = pct
             self.current_speed_mbps = speed_mbps
+            now = time.monotonic()
+            if (
+                now - getattr(self, "_last_progress_ui_at", 0.0) < 0.1
+                and pct < 100
+            ):
+                return
+            self._last_progress_ui_at = now
             self.after(0, lambda: (
                 self.progress_bar.set(pct / 100.0),
                 self.speed_time_label.configure(
@@ -851,6 +1175,80 @@ class AnyFileDownloaderApp(ctk.CTk):
         safe_error = redact_diagnostic(err_text, limit=800)
         messagebox.showerror("Transfer Error", f"An error occurred during data stream:\n{safe_error}")
 
+
+class DesktopRequestRouter:
+    """Bridge the IPC thread to Tk, including requests received during startup."""
+
+    def __init__(self):
+        self.app = None
+        self.pending = []
+        self.lock = threading.Lock()
+
+    def attach(self, app):
+        with self.lock:
+            self.app = app
+            pending = self.pending
+            self.pending = []
+        for request in pending:
+            self.handle(request)
+
+    def handle(self, message):
+        if message.get("action") == "activate":
+            with self.lock:
+                app = self.app
+            if app is not None:
+                app.after(0, app.activate_window)
+            return {"ok": True, "status": "active"}
+        if message.get("action") == "status":
+            with self.lock:
+                app = self.app
+            return app.ipc_status() if app is not None else {"ok": True, "status": "starting", "jobs": []}
+        if message.get("action") != "download":
+            return {"ok": False, "error": {"code": "invalid_request", "message": "Unsupported IPC action"}}
+        with self.lock:
+            app = self.app
+            if app is None:
+                self.pending.append(dict(message))
+                return {"ok": True, "status": "startup_queue", "pid": os.getpid()}
+        return app.enqueue_request_threadsafe(message)
+
+
+def command_line_request(arguments):
+    if not arguments.download_url:
+        return None
+    return {
+        "action": "download",
+        "url": arguments.download_url,
+        "page_url": arguments.page_url,
+        "title": arguments.title,
+        "detected_type": arguments.detected_type,
+        "mime_type": arguments.mime_type,
+        "source": arguments.source,
+        "media_title": arguments.media_title,
+        "browser_filename": arguments.browser_filename,
+        "link_text": arguments.link_text,
+        "referer": arguments.referer,
+        "origin": arguments.origin,
+        "user_agent": arguments.user_agent,
+        "accept": arguments.accept,
+        "accept_language": arguments.accept_language,
+        "range": arguments.browser_range,
+        "sec_fetch_dest": arguments.sec_fetch_dest,
+        "sec_fetch_mode": arguments.sec_fetch_mode,
+        "sec_fetch_site": arguments.sec_fetch_site,
+    }
+
+
+def forward_to_running_desktop(message, attempts=50, delay=0.1):
+    for _attempt in range(attempts):
+        try:
+            response = send_ipc_message(message)
+            if response.get("ok"):
+                return True
+        except (OSError, ValueError, RuntimeError):
+            time.sleep(delay)
+    return False
+
 def parse_command_line():
     parser = argparse.ArgumentParser(description="AnyFileDownloader desktop application")
     parser.add_argument("--download-url", default="", help="URL forwarded by the native messaging host")
@@ -876,27 +1274,19 @@ def parse_command_line():
 
 if __name__ == "__main__":
     arguments = parse_command_line()
-    initial_context = {
-        "detected_type": arguments.detected_type,
-        "mime_type": arguments.mime_type,
-        "source": arguments.source,
-        "media_title": arguments.media_title,
-        "browser_filename": arguments.browser_filename,
-        "link_text": arguments.link_text,
-        "referer": arguments.referer,
-        "origin": arguments.origin,
-        "user_agent": arguments.user_agent,
-        "accept": arguments.accept,
-        "accept_language": arguments.accept_language,
-        "range": arguments.browser_range,
-        "sec_fetch_dest": arguments.sec_fetch_dest,
-        "sec_fetch_mode": arguments.sec_fetch_mode,
-        "sec_fetch_site": arguments.sec_fetch_site,
-    }
-    app = AnyFileDownloaderApp(
-        arguments.download_url,
-        arguments.page_url,
-        arguments.title,
-        initial_context,
-    )
-    app.mainloop()
+    initial_request = command_line_request(arguments)
+    router = DesktopRequestRouter()
+    instance_service = SingleInstanceService(router.handle)
+    if not instance_service.start():
+        message = initial_request or {"action": "activate"}
+        raise SystemExit(0 if forward_to_running_desktop(message) else 1)
+
+    app = AnyFileDownloaderApp()
+    app.instance_service = instance_service
+    router.attach(app)
+    if initial_request:
+        router.handle(initial_request)
+    try:
+        app.mainloop()
+    finally:
+        instance_service.stop()

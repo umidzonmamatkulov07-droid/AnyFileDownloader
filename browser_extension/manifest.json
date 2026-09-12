@@ -25,7 +25,7 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["media_detection.js", "content.js"],
+      "js": ["media_detection.js", "inline_buttons.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

@@ -17,6 +17,8 @@ class SettingsStoreTests(unittest.TestCase):
                 playlist=True,
                 queue_mode="Sequential",
                 sort_order="Oldest to Newest",
+                window_geometry="1180x820+25+40",
+                window_opacity=0.88,
             )
 
             store.save(expected)
@@ -39,6 +41,8 @@ class SettingsStoreTests(unittest.TestCase):
 
             self.assertEqual(loaded.quality, "Auto")
             self.assertFalse(loaded.playlist)
+            self.assertEqual(loaded.window_geometry, "1180x820")
+            self.assertEqual(loaded.window_opacity, 0.88)
 
 
 if __name__ == "__main__":

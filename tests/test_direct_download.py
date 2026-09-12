@@ -35,7 +35,14 @@ class _DownloadHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.__class__.requested_targets.append(self.path)
         path = urlsplit(self.path).path
-        if path == "/redirect":
+        if path == "/inline-test":
+            page = b"""<!doctype html><html><body style='background:#111;color:white'>
+                <h1>AnyFileDownloader browser fixture</h1>
+                <video controls src='/movie.mp4' style='width:640px;height:360px;background:#000'></video>
+                <p><a href='/normal.pdf'>Controlled PDF download</a></p>
+            </body></html>"""
+            self._send_file(page, "text/html")
+        elif path == "/redirect":
             self.send_response(302)
             self.send_header("Location", "/final/report")
             self.end_headers()

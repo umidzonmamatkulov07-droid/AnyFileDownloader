@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
@@ -46,6 +47,8 @@ class AppSettings:
     playlist: bool = False
     queue_mode: str = "All at once"
     sort_order: str = "Newest to Oldest"
+    window_geometry: str = "1180x820"
+    window_opacity: float = 0.88
 
     @classmethod
     def from_mapping(cls, data: Any) -> "AppSettings":
@@ -58,6 +61,8 @@ class AppSettings:
         playlist = data.get("playlist")
         queue_mode = data.get("queue_mode")
         sort_order = data.get("sort_order")
+        window_geometry = data.get("window_geometry")
+        window_opacity = data.get("window_opacity")
 
         return cls(
             download_directory=directory if isinstance(directory, str) and directory.strip() else defaults.download_directory,
@@ -65,6 +70,17 @@ class AppSettings:
             playlist=playlist if isinstance(playlist, bool) else defaults.playlist,
             queue_mode=queue_mode if queue_mode in QUEUE_MODES else defaults.queue_mode,
             sort_order=sort_order if sort_order in SORT_ORDERS else defaults.sort_order,
+            window_geometry=(
+                window_geometry
+                if isinstance(window_geometry, str)
+                and re.fullmatch(r"\d{3,4}x\d{3,4}(?:[+-]\d+){0,2}", window_geometry)
+                else defaults.window_geometry
+            ),
+            window_opacity=(
+                float(window_opacity)
+                if isinstance(window_opacity, (int, float)) and 0.70 <= float(window_opacity) <= 1.0
+                else defaults.window_opacity
+            ),
         )
 
 

@@ -11,11 +11,13 @@ import os
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import BinaryIO, Optional
 from urllib.parse import urlparse
 
 from diagnostics import configure_logging, log_event
+from single_instance import send_ipc_message
 
 
 MAX_MESSAGE_SIZE = 16 * 1024 * 1024
@@ -23,7 +25,7 @@ LOGGER = configure_logging("anyfiledownloader.native_host")
 DETECTED_TYPES = {"HLS", "DASH", "VIDEO", "AUDIO", "DOCUMENT", "ARCHIVE", "FILE", "DIRECT", "UNKNOWN"}
 SOURCES = {
     "webRequest", "chrome_download", "performance", "media_element",
-    "anchor_download", "anchor_link", "manual",
+    "anchor_download", "anchor_link", "inline_button", "manual",
 }
 
 
@@ -130,7 +132,8 @@ def validate_download_request(message: dict) -> dict:
     return request
 
 
-def desktop_command(request: dict) -> list[str]:
+def desktop_command(request: Optional[dict] = None) -> list[str]:
+    """Build a desktop command; request arguments are retained for manual CLI compatibility."""
     configured_app = os.environ.get("ANYFILEDOWNLOADER_APP")
     if configured_app:
         command = [configured_app]
@@ -139,6 +142,9 @@ def desktop_command(request: dict) -> list[str]:
         command = [str(Path(sys.executable).with_name(executable_name))]
     else:
         command = [sys.executable, str(Path(__file__).with_name("downloader.py"))]
+
+    if request is None:
+        return command
 
     command.extend(["--download-url", request["url"]])
     command_line_fields = {
@@ -166,7 +172,15 @@ def desktop_command(request: dict) -> list[str]:
     return command
 
 
-def forward_download_request(request: dict) -> int:
+def forward_download_request(request: dict) -> dict:
+    """Reuse the running desktop or start a blank process then deliver over IPC."""
+    try:
+        response = send_ipc_message(request)
+        if response.get("ok"):
+            return {"pid": int(response.get("pid") or 0), "reused": True}
+    except (OSError, ValueError, RuntimeError):
+        pass
+
     creation_flags = 0
     popen_options = {
         "stdin": subprocess.DEVNULL,
@@ -178,8 +192,19 @@ def forward_download_request(request: dict) -> int:
     else:
         popen_options["start_new_session"] = True
 
-    process = subprocess.Popen(desktop_command(request), creationflags=creation_flags, **popen_options)
-    return process.pid
+    # Do not place URLs, signed query values, or request headers in the process
+    # list. The new process owns (or waits for) the local-user IPC endpoint and
+    # the validated request is delivered there after startup.
+    process = subprocess.Popen(desktop_command(), creationflags=creation_flags, **popen_options)
+    for _attempt in range(50):
+        try:
+            response = send_ipc_message(request)
+            if response.get("ok"):
+                return {"pid": int(response.get("pid") or process.pid), "reused": False}
+        except (OSError, ValueError, RuntimeError):
+            pass
+        time.sleep(0.1)
+    raise RuntimeError("Desktop IPC did not become ready")
 
 
 def error_response(code: str, message: str) -> dict:
@@ -206,12 +231,19 @@ def handle_message(message: dict) -> dict:
     )
 
     try:
-        process_id = forward_download_request(request)
+        dispatch = forward_download_request(request)
     except Exception as error:
         log_event(LOGGER, "gui_launch_failed", category="launch_failed", reason=type(error).__name__)
         return error_response("launch_failed", "Could not start the AnyFileDownloader desktop application.")
-    log_event(LOGGER, "gui_launched", request["url"], request, detected_type=request["detected_type"])
-    return {"ok": True, "action": "download", "status": "accepted", "pid": process_id}
+    event = "gui_reused" if dispatch["reused"] else "gui_launched"
+    log_event(LOGGER, event, request["url"], request, detected_type=request["detected_type"])
+    return {
+        "ok": True,
+        "action": "download",
+        "status": "accepted",
+        "pid": dispatch["pid"],
+        "reused": dispatch["reused"],
+    }
 
 
 def run(input_stream: BinaryIO, output_stream: BinaryIO) -> None:

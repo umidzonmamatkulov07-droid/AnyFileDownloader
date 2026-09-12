@@ -6,7 +6,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from native_host import desktop_command, encode_message, handle_message, read_message, run, validate_download_request
+from native_host import (
+    desktop_command,
+    encode_message,
+    forward_download_request,
+    handle_message,
+    read_message,
+    run,
+    validate_download_request,
+)
 
 
 class NativeMessageTests(unittest.TestCase):
@@ -91,7 +99,7 @@ class NativeMessageTests(unittest.TestCase):
         self.assertIn("report.docx", command)
 
     def test_browser_event_and_download_anchor_sources_are_accepted(self):
-        for source in ("chrome_download", "anchor_download"):
+        for source in ("chrome_download", "anchor_download", "inline_button"):
             request = validate_download_request({
                 "action": "download",
                 "url": "https://files.example/report.pdf",
@@ -132,6 +140,49 @@ class NativeMessageTests(unittest.TestCase):
                 response = handle_message({"action": "download", "url": "https://example.com/video.mp4"})
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "launch_failed")
+
+    @patch("native_host.subprocess.Popen")
+    @patch("native_host.send_ipc_message", return_value={"ok": True, "pid": 77})
+    def test_running_desktop_is_reused_without_launch(self, _send, popen):
+        request = validate_download_request({
+            "action": "download",
+            "url": "https://example.com/video.mp4",
+            "detected_type": "VIDEO",
+        })
+        dispatch = forward_download_request(request)
+        self.assertTrue(dispatch["reused"])
+        self.assertEqual(dispatch["pid"], 77)
+        popen.assert_not_called()
+
+    @patch("native_host.subprocess.Popen")
+    @patch(
+        "native_host.send_ipc_message",
+        side_effect=[FileNotFoundError, {"ok": True, "pid": 4321}],
+    )
+    def test_first_request_launches_one_desktop(self, _send, popen):
+        popen.return_value.pid = 9876
+        request = validate_download_request({
+            "action": "download",
+            "url": "https://example.com/video.mp4",
+            "detected_type": "VIDEO",
+        })
+        dispatch = forward_download_request(request)
+        self.assertFalse(dispatch["reused"])
+        self.assertEqual(dispatch["pid"], 4321)
+        popen.assert_called_once()
+        self.assertNotIn("--download-url", popen.call_args.args[0])
+
+    @patch("native_host.subprocess.Popen")
+    @patch("native_host.send_ipc_message", return_value={"ok": True, "pid": 77})
+    def test_five_subsequent_requests_do_not_launch_more_windows(self, _send, popen):
+        for index in range(5):
+            request = validate_download_request({
+                "action": "download",
+                "url": f"https://example.com/video-{index}.mp4",
+                "detected_type": "VIDEO",
+            })
+            self.assertTrue(forward_download_request(request)["reused"])
+        popen.assert_not_called()
 
     def test_empty_stream_signals_shutdown(self):
         self.assertIsNone(read_message(io.BytesIO()))

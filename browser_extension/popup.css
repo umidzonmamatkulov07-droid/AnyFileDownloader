@@ -53,6 +53,19 @@ input {
   color: #fff;
 }
 
+.setting-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.setting-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: #00f0ff;
+}
+
 #candidate-list {
   display: grid;
   gap: 8px;
